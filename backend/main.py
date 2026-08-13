@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import io
 import json
 import math
@@ -204,6 +205,29 @@ def make_cover(path: Path, title: str, author: str, index: int) -> None:
     image.save(path, "PNG")
 
 
+async def generate_cover(path: Path, title: str, author: str, description: str,
+                         prompt: str, index: int, settings: dict[str, Any]) -> None:
+    """Use an OpenAI-compatible image endpoint when available, with a local fallback."""
+    if settings.get("api_key"):
+        try:
+            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+                response = await client.post(
+                    settings["api_base"].rstrip("/") + "/images/generations",
+                    headers={"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
+                    json={"model": "gpt-image-1", "size": "1024x1536", "n": 1,
+                          "prompt": f"为《{title}》创作无文字的竖版书籍分享封面。作者：{author}。简介：{description}。视觉要求：{prompt}"},
+                )
+                response.raise_for_status()
+                data = response.json()["data"][0]
+                raw = base64.b64decode(data["b64_json"]) if data.get("b64_json") else (await client.get(data["url"])).content
+                with Image.open(io.BytesIO(raw)) as generated:
+                    generated.convert("RGB").resize((1080, 1440)).save(path, "PNG")
+                return
+        except Exception:
+            pass
+    make_cover(path, title, author, index)
+
+
 def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
     rate = 24000
     with wave.open(str(path), "wb") as out:
@@ -223,7 +247,7 @@ async def speech(text: str, voice: str, settings: dict[str, Any], output: Path) 
         return
     region = settings.get("azure_speech_region", "eastus")
     fmt = settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")
-    ssml = f'<speak version="1.0" xml:lang="zh-CN"><voice name="{voice}">{text}</voice></speak>'
+    ssml = f'<speak version="1.0" xml:lang="zh-CN"><voice name="{html.escape(voice, quote=True)}">{html.escape(text)}</voice></speak>'
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
             f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
@@ -283,7 +307,7 @@ async def process_workflow(wid: str) -> None:
         covers = []
         for i, prompt in enumerate(cover_prompts):
             path = MEDIA / f"{wid}-cover-{i+1}.png"
-            make_cover(path, title, author, i)
+            await generate_cover(path, title, author, description, prompt["text"], i, settings)
             covers.append({"prompt": prompt["text"], "url": f"/media/{path.name}"})
         save_workflow(wid, step=5, progress=82, payload_update={"covers": covers})
 
