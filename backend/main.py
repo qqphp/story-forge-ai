@@ -86,6 +86,7 @@ DEFAULT_SETTINGS = {
     "azure_speech_region": os.getenv("AZURE_SPEECH_REGION", "eastus"),
     "voice_format": "audio-24khz-48kbitrate-mono-mp3",
     "voices": ["zh-CN-XiaoxiaoNeural"],
+    "speech_rate": 0,
 }
 
 
@@ -118,6 +119,8 @@ class WorkflowCreate(BaseModel):
     edition: str = Field(default="", max_length=120)
     writing_prompt_ids: list[str] = Field(default_factory=list)
     cover_prompt_ids: list[str] = Field(default_factory=list)
+    voice: str = Field(default="zh-CN-XiaoxiaoNeural", min_length=1, max_length=120)
+    speech_rate: int = Field(default=0, ge=-50, le=100)
 
 
 MAX_PROMPT_LENGTH = 100_000
@@ -143,6 +146,7 @@ class SettingsPayload(BaseModel):
     azure_speech_region: str = "eastus"
     voice_format: str = "audio-24khz-48kbitrate-mono-mp3"
     voices: list[str] = ["zh-CN-XiaoxiaoNeural"]
+    speech_rate: int = Field(default=0, ge=-50, le=100)
 
 
 def get_settings() -> dict[str, Any]:
@@ -290,14 +294,20 @@ def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
         out.writeframes(frames)
 
 
-async def speech(text: str, voice: str, settings: dict[str, Any], output: Path) -> bool:
+def speech_ssml(text: str, voice: str, rate: int) -> str:
+    safe_rate = max(-50, min(100, int(rate)))
+    return (f'<speak version="1.0" xml:lang="zh-CN"><voice name="{html.escape(voice, quote=True)}">'
+            f'<prosody rate="{safe_rate:+d}%">{html.escape(text)}</prosody></voice></speak>')
+
+
+async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], output: Path) -> bool:
     key = settings.get("azure_speech_key")
     if not key:
         make_demo_wav(output.with_suffix(".wav"))
         return False
     region = settings.get("azure_speech_region", "eastus")
     fmt = settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")
-    ssml = f'<speak version="1.0" xml:lang="zh-CN"><voice name="{html.escape(voice, quote=True)}">{html.escape(text)}</voice></speak>'
+    ssml = speech_ssml(text, voice, rate)
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
             f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
@@ -357,17 +367,18 @@ async def process_workflow(wid: str) -> None:
             polished.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": improved or raw.replace("真正动人的地方", "我最喜欢的是")})
         save_workflow(wid, step=3, progress=45, payload_update={"original_drafts": originals, "polished_drafts": polished})
 
-        voices = settings.get("voices") or ["zh-CN-XiaoxiaoNeural"]
+        voices = item.get("voices") or settings.get("voices") or ["zh-CN-XiaoxiaoNeural"]
+        speech_rate = item.get("speech_rate", settings.get("speech_rate", 0))
         audio_items = []
         for di, draft in enumerate(polished):
             for vi, voice in enumerate(voices):
                 if wid in DELETING_WORKFLOWS: return
                 base = MEDIA / f"{wid}-d{di+1}-v{vi+1}"
                 target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
-                used_real_speech = await speech(draft["text"], voice, settings, target)
+                used_real_speech = await speech(draft["text"], voice, speech_rate, settings, target)
                 if wid in DELETING_WORKFLOWS: return
                 actual = target if target.exists() else base.with_suffix(".wav")
-                audio_items.append({"draft_id": draft["id"], "voice": voice, "url": f"/media/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
+                audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
         save_workflow(wid, step=4, progress=65, payload_update={"audio": audio_items})
 
         cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")]
@@ -530,6 +541,7 @@ def workflow_create(value: WorkflowCreate, tasks: BackgroundTasks):
         ).fetchall()
     payload = {"writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
                "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in cover_rows],
+               "voices": [value.voice], "speech_rate": value.speech_rate,
                "description": "", "original_drafts": [], "polished_drafts": [], "covers": [], "audio": [], "videos": []}
     with db() as conn:
         conn.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?,?,?)",

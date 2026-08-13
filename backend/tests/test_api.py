@@ -35,6 +35,7 @@ class StoryForgeApiTests(unittest.TestCase):
         response = self.client.put("/api/settings", json=payload)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["api_key"], "••••••••")
+        self.assertEqual(response.json()["speech_rate"], 0)
 
     def test_prompt_template_crud(self):
         initial = self.client.get("/api/prompts").json()
@@ -65,12 +66,20 @@ class StoryForgeApiTests(unittest.TestCase):
         writing = next(p for p in prompts if p["kind"] == "writing")
         cover = next(p for p in prompts if p["kind"] == "cover")
         with patch.object(main, "process_workflow"):
-            response = self.client.post("/api/workflows", json={"book_title": "测试书", "writing_prompt_ids": [writing["id"]], "cover_prompt_ids": [cover["id"]]})
+            response = self.client.post("/api/workflows", json={"book_title": "测试书", "writing_prompt_ids": [writing["id"]], "cover_prompt_ids": [cover["id"]], "voice": "zh-CN-YunxiNeural", "speech_rate": 15})
         self.assertEqual(response.status_code, 202)
         workflow = self.client.get(f"/api/workflows/{response.json()['id']}").json()
         self.assertEqual(workflow["writing_prompts"][0]["id"], writing["id"])
         self.assertEqual(workflow["cover_prompts"][0]["id"], cover["id"])
         self.assertEqual(workflow["cover_prompts"][0]["name"], cover["name"])
+        self.assertEqual(workflow["voices"], ["zh-CN-YunxiNeural"])
+        self.assertEqual(workflow["speech_rate"], 15)
+
+    def test_speech_ssml_contains_safe_rate_and_escaped_content(self):
+        ssml = main.speech_ssml("读书 < 思考", 'voice"name', 120)
+        self.assertIn('rate="+100%"', ssml)
+        self.assertIn('name="voice&quot;name"', ssml)
+        self.assertIn("读书 &lt; 思考", ssml)
 
     def test_audio_extensions_follow_microsoft_formats(self):
         self.assertEqual(main.audio_extension("audio-48khz-192kbitrate-mono-mp3"), ".mp3")
