@@ -295,6 +295,17 @@ async def speech(text: str, voice: str, settings: dict[str, Any], output: Path) 
     return True
 
 
+def audio_extension(output_format: str) -> str:
+    if output_format.startswith("amr-"): return ".amr"
+    if output_format.startswith("ogg-"): return ".ogg"
+    if output_format.startswith("webm-"): return ".webm"
+    if "mp3" in output_format: return ".mp3"
+    if "opus" in output_format: return ".opus"
+    if output_format.startswith("raw-"): return ".pcm"
+    if output_format.startswith("g722-"): return ".g722"
+    return ".audio"
+
+
 async def process_workflow(wid: str) -> None:
     try:
         with db() as conn:
@@ -333,8 +344,9 @@ async def process_workflow(wid: str) -> None:
         for di, draft in enumerate(polished):
             for vi, voice in enumerate(voices):
                 base = MEDIA / f"{wid}-d{di+1}-v{vi+1}"
-                used_real_speech = await speech(draft["text"], voice, settings, base.with_suffix(".mp3"))
-                actual = base.with_suffix(".mp3") if base.with_suffix(".mp3").exists() else base.with_suffix(".wav")
+                target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
+                used_real_speech = await speech(draft["text"], voice, settings, target)
+                actual = target if target.exists() else base.with_suffix(".wav")
                 audio_items.append({"draft_id": draft["id"], "voice": voice, "url": f"/media/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
         save_workflow(wid, step=4, progress=65, payload_update={"audio": audio_items})
 

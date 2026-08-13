@@ -57,6 +57,12 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(workflow["writing_prompts"][0]["id"], writing["id"])
         self.assertEqual(workflow["cover_prompts"][0]["id"], cover["id"])
 
+    def test_audio_extensions_follow_microsoft_formats(self):
+        self.assertEqual(main.audio_extension("audio-48khz-192kbitrate-mono-mp3"), ".mp3")
+        self.assertEqual(main.audio_extension("ogg-48khz-16bit-mono-opus"), ".ogg")
+        self.assertEqual(main.audio_extension("webm-24khz-16bit-mono-opus"), ".webm")
+        self.assertEqual(main.audio_extension("raw-24khz-16bit-mono-pcm"), ".pcm")
+
 
 if __name__ == "__main__":
     unittest.main()
