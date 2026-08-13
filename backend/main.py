@@ -120,15 +120,18 @@ class WorkflowCreate(BaseModel):
     cover_prompt_ids: list[str] = Field(default_factory=list)
 
 
+MAX_PROMPT_LENGTH = 100_000
+
+
 class PromptTemplateCreate(BaseModel):
     kind: str = Field(pattern="^(writing|cover)$")
     name: str = Field(min_length=1, max_length=80)
-    text: str = Field(min_length=1, max_length=2000)
+    text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
 
 
 class PromptTemplateUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    text: str = Field(min_length=1, max_length=2000)
+    text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
 
 
 class SettingsPayload(BaseModel):

@@ -46,6 +46,20 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(updated.json()["name"], "已更新")
         self.assertEqual(self.client.delete(f"/api/prompts/{prompt_id}").status_code, 204)
 
+    def test_long_writing_and_cover_prompts_can_be_saved(self):
+        long_writing = "分享稿要求：" + "自然、具体、有细节。" * 1200
+        long_cover = "封面要求：" + "构图克制、色彩统一、避免文字。" * 900
+        writing = self.client.post("/api/prompts", json={"kind": "writing", "name": "长分享稿提示词", "text": long_writing})
+        cover = self.client.post("/api/prompts", json={"kind": "cover", "name": "长封面提示词", "text": long_cover})
+        self.assertEqual(writing.status_code, 201)
+        self.assertEqual(cover.status_code, 201)
+        self.assertEqual(writing.json()["text"], long_writing)
+        self.assertEqual(cover.json()["text"], long_cover)
+        revised = long_writing + "补充修改要求。" * 500
+        updated = self.client.put(f"/api/prompts/{writing.json()['id']}", json={"name": "长分享稿提示词", "text": revised})
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["text"], revised)
+
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()
         writing = next(p for p in prompts if p["kind"] == "writing")
