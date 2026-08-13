@@ -4,12 +4,12 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type PromptTemplate = { id: string; kind: "writing" | "cover"; name: string; text: string };
-type Asset = { url: string; voice?: string; prompt?: string; draft_id?: string };
+type Asset = { url: string; voice?: string; prompt?: string; prompt_name?: string; draft_id?: string };
 type Draft = { id: string; prompt: string; text: string };
 type Workflow = {
   id: string; book_title: string; author: string; edition: string; status: string;
   step: number; progress: number; created_at: number; description?: string; error?: string;
-  original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; videos?: Asset[];
+  original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; videos?: Asset[]; cover_prompts?: PromptTemplate[];
 };
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -173,13 +173,13 @@ function DetailPanel({task,onClose,onRetry,onDelete}:{task:Workflow;onClose:()=>
   const remove=async()=>{setDeleting(true);setDeleteError("");try{await onDelete()}catch{setDeleteError("删除失败，请稍后重试");setDeleting(false)}};
   const tabs=[['overview','概览'],['drafts','分享稿'],['covers','封面'],['audio','配音'],['videos','视频']];
   return <div className="drawer-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><aside className="drawer">
-    <div className="drawer-head"><button className="close" onClick={onClose}>×</button><div><p className="eyebrow">作品详情</p><h2>{task.book_title}</h2><p>{task.author}{task.edition ? ` · ${task.edition}`:""}</p></div><div className="drawer-status-actions"><Status value={task.status}/><button className="delete-work" onClick={()=>setConfirmDelete(true)}>删除作品</button></div></div>
+    <div className="drawer-head"><button className="close" onClick={onClose}>×</button><div><p className="eyebrow">作品详情</p><h2>{task.book_title}</h2><p>{task.author}{task.edition ? ` · ${task.edition}`:""}</p></div><div className="drawer-status-actions"><Status value={task.status}/><button className="delete-work" onClick={()=>setConfirmDelete(true)}><span className="delete-icon" aria-hidden="true"/>删除作品</button></div></div>
     <nav className="tabs">{tabs.map(([id,label])=><button key={id} className={tab===id?"active":""} onClick={()=>setTab(id)}>{label}</button>)}</nav>
     <div className="drawer-content">
       {task.status!=="completed"&&<div className="pipeline"><div className="pipeline-head"><span>{task.status==="failed"?"制作遇到问题":`正在${stages[Math.max(0,task.step-1)]||"准备"}`}</span><b>{task.progress}%</b></div><div className="progress"><i style={{width:`${task.progress}%`}}/></div><div className="steps">{stages.map((s,i)=><span className={i<task.step?"done":i===task.step?"now":""} key={s}>{i<task.step?"✓":i+1}<small>{s}</small></span>)}</div>{task.error&&<p className="error">{task.error} <button onClick={onRetry}>重试</button></p>}</div>}
       {tab==="overview"&&<section className="result-section"><h3>书籍简介</h3><div className="paper">{task.description||"简介将在书籍解析完成后出现。"}</div><h3>产出清单</h3><div className="asset-summary"><span><b>{task.polished_drafts?.length||0}</b> 篇分享稿</span><span><b>{task.audio?.length||0}</b> 份配音</span><span><b>{task.covers?.length||0}</b> 张封面</span><span><b>{task.videos?.length||0}</b> 条视频</span></div></section>}
       {tab==="drafts"&&<section className="result-section"><div className="section-inline"><h3>分享稿对比</h3>{(task.polished_drafts?.length||0)>1&&<select value={compare} onChange={e=>setCompare(+e.target.value)}>{task.polished_drafts?.map((d,i)=><option key={d.id} value={i}>版本 {i+1}</option>)}</select>}</div><div className="compare"><article><label>原始稿</label><p>{task.original_drafts?.[compare]?.text||"尚未生成"}</p></article><article className="polished"><label>自然化优化稿</label><p>{task.polished_drafts?.[compare]?.text||"尚未生成"}</p></article></div></section>}
-      {tab==="covers"&&<section className="media-grid">{task.covers?.length?<>{task.covers.map((a,i)=><figure key={i}><img src={`${API}${a.url}`} alt={`${task.book_title}封面 ${i+1}`}/><figcaption>{a.prompt}</figcaption></figure>)}</>:<EmptyMedia text="封面尚未生成"/>}</section>}
+      {tab==="covers"&&<section className="media-grid">{task.covers?.length?<>{task.covers.map((a,i)=>{const promptName=a.prompt_name||task.cover_prompts?.find(prompt=>prompt.text===a.prompt)?.name||`封面提示词 ${i+1}`;return <figure key={i}><img src={`${API}${a.url}`} alt={`${task.book_title}封面 ${i+1}`}/><figcaption className="cover-prompt"><b>{promptName}</b><p title={a.prompt}>{a.prompt||"未记录提示词内容"}</p></figcaption></figure>})}</>:<EmptyMedia text="封面尚未生成"/>}</section>}
       {tab==="audio"&&<section className="audio-list">{task.audio?.length?task.audio.map((a,i)=><article key={i}><span>声</span><div><b>{a.voice}</b><small>分享稿 {i+1}</small></div><audio controls preload="none" src={`${API}${a.url}`}/></article>):<EmptyMedia text="配音尚未生成"/>}</section>}
       {tab==="videos"&&<section className="video-grid">{task.videos?.length?task.videos.map((a,i)=><figure key={i}><video controls preload="metadata" src={`${API}${a.url}`}/><figcaption>{a.voice} · 分享稿 {i+1}</figcaption></figure>):<EmptyMedia text="视频尚未生成"/>}</section>}
     </div>{confirmDelete&&<div className="confirm-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&!deleting&&setConfirmDelete(false)}><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><span className="danger-mark">删</span><h3 id="delete-title">确定删除《{task.book_title}》？</h3><p>该作品的简介、分享稿、封面、配音和视频都会被永久删除，此操作无法撤销。</p>{deleteError&&<small>{deleteError}</small>}<div><button className="secondary" disabled={deleting} onClick={()=>setConfirmDelete(false)}>取消</button><button className="danger-button" disabled={deleting} onClick={remove}>{deleting?"正在删除…":"确认永久删除"}</button></div></section></div>}

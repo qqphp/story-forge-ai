@@ -70,6 +70,7 @@ class StoryForgeApiTests(unittest.TestCase):
         workflow = self.client.get(f"/api/workflows/{response.json()['id']}").json()
         self.assertEqual(workflow["writing_prompts"][0]["id"], writing["id"])
         self.assertEqual(workflow["cover_prompts"][0]["id"], cover["id"])
+        self.assertEqual(workflow["cover_prompts"][0]["name"], cover["name"])
 
     def test_audio_extensions_follow_microsoft_formats(self):
         self.assertEqual(main.audio_extension("audio-48khz-192kbitrate-mono-mp3"), ".mp3")

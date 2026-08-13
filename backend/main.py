@@ -378,7 +378,7 @@ async def process_workflow(wid: str) -> None:
             path = MEDIA / f"{wid}-cover-{i+1}.png"
             used_real_image = await generate_cover(path, title, author, description, prompt["text"], i, settings)
             if wid in DELETING_WORKFLOWS: return
-            covers.append({"prompt": prompt["text"], "url": f"/media/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
+            covers.append({"prompt_name": prompt.get("name", f"封面提示词 {i + 1}"), "prompt": prompt["text"], "url": f"/media/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
         save_workflow(wid, step=5, progress=82, payload_update={"covers": covers})
 
         videos = []
