@@ -22,8 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env", override=False)
 DATA = ROOT / "data"
 MEDIA = DATA / "media"
 DB_PATH = DATA / "storyforge.db"
@@ -55,16 +57,33 @@ def init_db() -> None:
               progress INTEGER NOT NULL, created_at INTEGER NOT NULL,
               updated_at INTEGER NOT NULL, payload TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS prompt_templates (
+              id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('writing','cover')),
+              name TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_prompt_templates_kind ON prompt_templates(kind);
             """
         )
+        count = conn.execute("SELECT COUNT(*) AS count FROM prompt_templates").fetchone()["count"]
+        if count == 0:
+            now = int(time.time())
+            defaults = [
+                ("writing-short-video", "writing", "短视频口播", "适合 2 分钟短视频口播，有真实阅读感受", now, now),
+                ("writing-insight", "writing", "反常识洞见", "从一个反常识观点切入，避免剧透，结尾给出阅读建议", now, now),
+                ("cover-literary", "cover", "文学质感", "克制的文学感，竖版构图，无文字，为标题留出空间", now, now),
+            ]
+            conn.executemany("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?)", defaults)
+        conn.execute("PRAGMA optimize")
 
 
 DEFAULT_SETTINGS = {
-    "api_base": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini",
+    "api_base": "https://api.teamorouter.com/v1",
+    "model": "gpt-5.4-mini",
+    "image_model": "gpt-image-2",
     "api_key": "",
     "azure_speech_key": "",
-    "azure_speech_region": "eastus",
+    "azure_speech_region": os.getenv("AZURE_SPEECH_REGION", "eastus"),
     "voice_format": "audio-24khz-48kbitrate-mono-mp3",
     "voices": ["zh-CN-XiaoxiaoNeural"],
 }
@@ -96,13 +115,25 @@ class WorkflowCreate(BaseModel):
     book_title: str = Field(min_length=1, max_length=160)
     author: str = Field(default="", max_length=120)
     edition: str = Field(default="", max_length=120)
-    writing_prompts: list[PromptItem] = Field(default_factory=list)
-    cover_prompts: list[PromptItem] = Field(default_factory=list)
+    writing_prompt_ids: list[str] = Field(default_factory=list)
+    cover_prompt_ids: list[str] = Field(default_factory=list)
+
+
+class PromptTemplateCreate(BaseModel):
+    kind: str = Field(pattern="^(writing|cover)$")
+    name: str = Field(min_length=1, max_length=80)
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class PromptTemplateUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    text: str = Field(min_length=1, max_length=2000)
 
 
 class SettingsPayload(BaseModel):
-    api_base: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
+    api_base: str = "https://api.teamorouter.com/v1"
+    model: str = "gpt-5.4-mini"
+    image_model: str = "gpt-image-2"
     api_key: str = ""
     azure_speech_key: str = ""
     azure_speech_region: str = "eastus"
@@ -114,6 +145,9 @@ def get_settings() -> dict[str, Any]:
     with db() as conn:
         row = conn.execute("SELECT payload FROM settings WHERE id=1").fetchone()
     result = DEFAULT_SETTINGS | (json.loads(row["payload"]) if row else {})
+    result["api_base"] = os.getenv("MODEL_API_BASE", result["api_base"])
+    result["model"] = os.getenv("MODEL_NAME", result["model"])
+    result["image_model"] = os.getenv("IMAGE_MODEL_NAME", result["image_model"])
     result["api_key"] = result.get("api_key") or os.getenv("MODEL_API_KEY", "")
     result["azure_speech_key"] = result.get("azure_speech_key") or os.getenv("AZURE_SPEECH_KEY", "")
     return result
@@ -206,15 +240,15 @@ def make_cover(path: Path, title: str, author: str, index: int) -> None:
 
 
 async def generate_cover(path: Path, title: str, author: str, description: str,
-                         prompt: str, index: int, settings: dict[str, Any]) -> None:
+                         prompt: str, index: int, settings: dict[str, Any]) -> bool:
     """Use an OpenAI-compatible image endpoint when available, with a local fallback."""
     if settings.get("api_key"):
         try:
-            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
                 response = await client.post(
                     settings["api_base"].rstrip("/") + "/images/generations",
                     headers={"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
-                    json={"model": "gpt-image-1", "size": "1024x1536", "n": 1,
+                    json={"model": settings.get("image_model", "gpt-image-2"), "size": "1024x1536", "n": 1,
                           "prompt": f"为《{title}》创作无文字的竖版书籍分享封面。作者：{author}。简介：{description}。视觉要求：{prompt}"},
                 )
                 response.raise_for_status()
@@ -222,10 +256,11 @@ async def generate_cover(path: Path, title: str, author: str, description: str,
                 raw = base64.b64decode(data["b64_json"]) if data.get("b64_json") else (await client.get(data["url"])).content
                 with Image.open(io.BytesIO(raw)) as generated:
                     generated.convert("RGB").resize((1080, 1440)).save(path, "PNG")
-                return
+                return True
         except Exception:
             pass
     make_cover(path, title, author, index)
+    return False
 
 
 def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
@@ -240,11 +275,11 @@ def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
         out.writeframes(frames)
 
 
-async def speech(text: str, voice: str, settings: dict[str, Any], output: Path) -> None:
+async def speech(text: str, voice: str, settings: dict[str, Any], output: Path) -> bool:
     key = settings.get("azure_speech_key")
     if not key:
         make_demo_wav(output.with_suffix(".wav"))
-        return
+        return False
     region = settings.get("azure_speech_region", "eastus")
     fmt = settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")
     ssml = f'<speak version="1.0" xml:lang="zh-CN"><voice name="{html.escape(voice, quote=True)}">{html.escape(text)}</voice></speak>'
@@ -257,6 +292,7 @@ async def speech(text: str, voice: str, settings: dict[str, Any], output: Path) 
         )
         response.raise_for_status()
         output.write_bytes(response.content)
+    return True
 
 
 async def process_workflow(wid: str) -> None:
@@ -297,9 +333,9 @@ async def process_workflow(wid: str) -> None:
         for di, draft in enumerate(polished):
             for vi, voice in enumerate(voices):
                 base = MEDIA / f"{wid}-d{di+1}-v{vi+1}"
-                await speech(draft["text"], voice, settings, base.with_suffix(".mp3"))
+                used_real_speech = await speech(draft["text"], voice, settings, base.with_suffix(".mp3"))
                 actual = base.with_suffix(".mp3") if base.with_suffix(".mp3").exists() else base.with_suffix(".wav")
-                audio_items.append({"draft_id": draft["id"], "voice": voice, "url": f"/media/{actual.name}"})
+                audio_items.append({"draft_id": draft["id"], "voice": voice, "url": f"/media/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
         save_workflow(wid, step=4, progress=65, payload_update={"audio": audio_items})
 
         cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")]
@@ -307,8 +343,8 @@ async def process_workflow(wid: str) -> None:
         covers = []
         for i, prompt in enumerate(cover_prompts):
             path = MEDIA / f"{wid}-cover-{i+1}.png"
-            await generate_cover(path, title, author, description, prompt["text"], i, settings)
-            covers.append({"prompt": prompt["text"], "url": f"/media/{path.name}"})
+            used_real_image = await generate_cover(path, title, author, description, prompt["text"], i, settings)
+            covers.append({"prompt": prompt["text"], "url": f"/media/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
         save_workflow(wid, step=5, progress=82, payload_update={"covers": covers})
 
         videos = []
@@ -372,6 +408,47 @@ async def voices():
     return {"voices": [v["ShortName"] for v in response.json() if v.get("Locale", "").startswith("zh-")], "demo": False}
 
 
+@app.get("/api/prompts")
+def prompts_list(kind: str | None = None):
+    if kind and kind not in ("writing", "cover"):
+        raise HTTPException(400, "提示词类型无效")
+    query = "SELECT * FROM prompt_templates"
+    params: tuple[Any, ...] = ()
+    if kind:
+        query += " WHERE kind=?"; params = (kind,)
+    query += " ORDER BY created_at, name"
+    with db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/prompts", status_code=201)
+def prompt_create(value: PromptTemplateCreate):
+    prompt_id, now = uuid.uuid4().hex[:12], int(time.time())
+    with db() as conn:
+        conn.execute("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?)",
+                     (prompt_id, value.kind, value.name.strip(), value.text.strip(), now, now))
+        row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
+    return dict(row)
+
+
+@app.put("/api/prompts/{prompt_id}")
+def prompt_update(prompt_id: str, value: PromptTemplateUpdate):
+    with db() as conn:
+        result = conn.execute("UPDATE prompt_templates SET name=?,text=?,updated_at=? WHERE id=?",
+                              (value.name.strip(), value.text.strip(), int(time.time()), prompt_id))
+        if result.rowcount == 0: raise HTTPException(404, "提示词不存在")
+        row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
+    return dict(row)
+
+
+@app.delete("/api/prompts/{prompt_id}", status_code=204)
+def prompt_delete(prompt_id: str):
+    with db() as conn:
+        result = conn.execute("DELETE FROM prompt_templates WHERE id=?", (prompt_id,))
+        if result.rowcount == 0: raise HTTPException(404, "提示词不存在")
+
+
 @app.get("/api/workflows")
 def workflows_list():
     with db() as conn:
@@ -389,8 +466,19 @@ def workflow_get(wid: str):
 @app.post("/api/workflows", status_code=202)
 def workflow_create(value: WorkflowCreate, tasks: BackgroundTasks):
     wid, now = uuid.uuid4().hex[:12], int(time.time())
-    payload = {"writing_prompts": [p.model_dump() for p in value.writing_prompts],
-               "cover_prompts": [p.model_dump() for p in value.cover_prompts],
+    with db() as conn:
+        writing_ids = value.writing_prompt_ids
+        cover_ids = value.cover_prompt_ids
+        writing_rows = conn.execute(
+            f"SELECT id,name,text FROM prompt_templates WHERE kind='writing' AND id IN ({','.join('?' for _ in writing_ids)})" if writing_ids else
+            "SELECT id,name,text FROM prompt_templates WHERE kind='writing' ORDER BY created_at LIMIT 1", writing_ids
+        ).fetchall()
+        cover_rows = conn.execute(
+            f"SELECT id,name,text FROM prompt_templates WHERE kind='cover' AND id IN ({','.join('?' for _ in cover_ids)})" if cover_ids else
+            "SELECT id,name,text FROM prompt_templates WHERE kind='cover' ORDER BY created_at LIMIT 1", cover_ids
+        ).fetchall()
+    payload = {"writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
+               "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in cover_rows],
                "description": "", "original_drafts": [], "polished_drafts": [], "covers": [], "audio": [], "videos": []}
     with db() as conn:
         conn.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?,?,?)",

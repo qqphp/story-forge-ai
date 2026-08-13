@@ -44,3 +44,4 @@ __pycache__/
 /.wrangler/
 /outputs/
 /work/
+/.firecrawl/

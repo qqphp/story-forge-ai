@@ -3,7 +3,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type Prompt = { text: string; enabled: boolean };
+type PromptTemplate = { id: string; kind: "writing" | "cover"; name: string; text: string };
 type Asset = { url: string; voice?: string; prompt?: string; draft_id?: string };
 type Draft = { id: string; prompt: string; text: string };
 type Workflow = {
@@ -25,6 +25,7 @@ export default function Home() {
   const [selected, setSelected] = useState<Workflow | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPrompts, setShowPrompts] = useState(false);
   const [toast, setToast] = useState("");
   const [connected, setConnected] = useState(false);
   const [query, setQuery] = useState("");
@@ -77,6 +78,7 @@ export default function Home() {
         </button>
         <div className="top-actions">
           <span className={`connection ${connected ? "online" : ""}`}><i />{connected ? "服务已连接" : "演示模式"}</span>
+          <button className="library-button" onClick={() => setShowPrompts(true)}>提示词库</button>
           <button className="icon-button" onClick={() => setShowSettings(true)} aria-label="打开设置">⚙</button>
           <button className="avatar" aria-label="账户">舟</button>
         </div>
@@ -104,7 +106,8 @@ export default function Home() {
         {shown.length ? <div className="task-grid">{shown.map(task => <TaskCard key={task.id} task={task} onOpen={() => setSelected(task)} />)}</div> : <div className="empty"><span>册</span><h3>还没有作品</h3><p>从一本打动你的书开始。</p><button className="primary" onClick={() => setShowCreate(true)}>开始新制作</button></div>}
       </section>
 
-      {showCreate && <CreateDialog onClose={() => setShowCreate(false)} onSubmit={createWorkflow} />}
+      {showCreate && <CreateDialog connected={connected} onClose={() => setShowCreate(false)} onSubmit={createWorkflow} />}
+      {showPrompts && <PromptLibraryDialog connected={connected} onClose={() => setShowPrompts(false)} onSaved={() => setToast("提示词库已更新")} />}
       {showSettings && <SettingsDialog connected={connected} onClose={() => setShowSettings(false)} onSaved={() => { setToast("配置已保存"); setShowSettings(false); loadTasks(); }} />}
       {selected && <DetailPanel task={selected} onClose={() => setSelected(null)} onRetry={async () => { await fetch(`${API}/api/workflows/${selected.id}/retry`, {method:"POST"}); setToast("已重新开始制作"); }} />}
       {toast && <div className="toast" role="status" onAnimationEnd={() => setToast("")}>{toast}</div>}
@@ -128,23 +131,38 @@ function Status({ value }: { value: string }) {
   return <span className={`status ${value}`}>{map[value] || value}</span>;
 }
 
-function CreateDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: Record<string, unknown>) => Promise<void> }) {
+function CreateDialog({ connected, onClose, onSubmit }: { connected: boolean; onClose: () => void; onSubmit: (data: Record<string, unknown>) => Promise<void> }) {
   const [title, setTitle] = useState(""); const [author, setAuthor] = useState(""); const [edition, setEdition] = useState("");
-  const [writing, setWriting] = useState<Prompt[]>([{text:"适合 2 分钟短视频口播，有真实阅读感受",enabled:true},{text:"从一个反常识观点切入，避免剧透",enabled:true}]);
-  const [covers, setCovers] = useState<Prompt[]>([{text:"克制的文学感，竖版构图，留出标题空间",enabled:true}]);
+  const fallback: PromptTemplate[] = [{id:"writing-short-video",kind:"writing",name:"短视频口播",text:"适合 2 分钟短视频口播，有真实阅读感受"},{id:"writing-insight",kind:"writing",name:"反常识洞见",text:"从一个反常识观点切入，避免剧透"},{id:"cover-literary",kind:"cover",name:"文学质感",text:"克制的文学感，竖版构图，无文字"}];
+  const [templates, setTemplates] = useState<PromptTemplate[]>(fallback);
+  const [selectedIds, setSelectedIds] = useState<string[]>(fallback.map(x=>x.id));
   const [busy, setBusy] = useState(false);
-  const submit = async (e: FormEvent) => { e.preventDefault(); if (!title.trim()) return; setBusy(true); try { await onSubmit({book_title:title.trim(),author:author.trim(),edition:edition.trim(),writing_prompts:writing,cover_prompts:covers}); } finally { setBusy(false); } };
+  useEffect(()=>{if(connected) fetch(`${API}/api/prompts`).then(r=>r.json()).then((items:PromptTemplate[])=>{setTemplates(items);setSelectedIds(items.map(x=>x.id));}).catch(()=>{});},[connected]);
+  const submit = async (e: FormEvent) => { e.preventDefault(); if (!title.trim()) return; setBusy(true); try { await onSubmit({book_title:title.trim(),author:author.trim(),edition:edition.trim(),writing_prompt_ids:templates.filter(x=>x.kind==="writing"&&selectedIds.includes(x.id)).map(x=>x.id),cover_prompt_ids:templates.filter(x=>x.kind==="cover"&&selectedIds.includes(x.id)).map(x=>x.id)}); } finally { setBusy(false); } };
   return <div className="modal-backdrop" role="presentation" onMouseDown={e => e.target === e.currentTarget && onClose()}><form className="modal create-modal" onSubmit={submit}>
     <div className="modal-head"><div><p className="eyebrow">新建工作流</p><h2>从哪一本书开始？</h2></div><button type="button" className="close" onClick={onClose}>×</button></div>
     <div className="form-grid"><label className="wide">书籍名称 <em>必填</em><input required value={title} onChange={e=>setTitle(e.target.value)} placeholder="例如：百年孤独" /></label><label>作者 <small>选填</small><input value={author} onChange={e=>setAuthor(e.target.value)} placeholder="加西亚·马尔克斯" /></label><label>版本 <small>选填</small><input value={edition} onChange={e=>setEdition(e.target.value)} placeholder="例如：2017 纪念版" /></label></div>
-    <PromptEditor title="分享稿提示词" hint="每个已启用提示词会生成一篇独立分享稿" items={writing} setItems={setWriting} />
-    <PromptEditor title="封面提示词" hint="每个已启用提示词会生成一张封面" items={covers} setItems={setCovers} />
-    <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim()}>{busy ? "正在创建…" : "开始自动制作 →"}</button></div>
+    <TemplatePicker title="分享稿提示词" hint="勾选几个，就生成几篇独立分享稿" kind="writing" templates={templates} selected={selectedIds} setSelected={setSelectedIds}/>
+    <TemplatePicker title="封面提示词" hint="勾选几个，就生成几张不同封面" kind="cover" templates={templates} selected={selectedIds} setSelected={setSelectedIds}/>
+    <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || selectedIds.length===0}>{busy ? "正在创建…" : "开始自动制作 →"}</button></div>
   </form></div>;
 }
 
-function PromptEditor({title,hint,items,setItems}:{title:string;hint:string;items:Prompt[];setItems:(v:Prompt[])=>void}) {
-  return <section className="prompt-editor"><div><h3>{title}</h3><p>{hint}</p></div>{items.map((item,i)=><div className="prompt-row" key={i}><input type="checkbox" checked={item.enabled} onChange={e=>setItems(items.map((x,j)=>j===i?{...x,enabled:e.target.checked}:x))}/><input value={item.text} onChange={e=>setItems(items.map((x,j)=>j===i?{...x,text:e.target.value}:x))}/><button type="button" onClick={()=>setItems(items.filter((_,j)=>j!==i))}>×</button></div>)}<button type="button" className="add-prompt" onClick={()=>setItems([...items,{text:"",enabled:true}])}>＋ 添加提示词</button></section>;
+function TemplatePicker({title,hint,kind,templates,selected,setSelected}:{title:string;hint:string;kind:"writing"|"cover";templates:PromptTemplate[];selected:string[];setSelected:(v:string[])=>void}) {
+  const items=templates.filter(x=>x.kind===kind);
+  return <section className="prompt-editor"><div><h3>{title}</h3><p>{hint}</p></div><div className="template-picker">{items.map(item=><label key={item.id} className={selected.includes(item.id)?"picked":""}><input type="checkbox" checked={selected.includes(item.id)} onChange={e=>setSelected(e.target.checked?[...selected,item.id]:selected.filter(id=>id!==item.id))}/><span><b>{item.name}</b><small>{item.text}</small></span></label>)}</div>{!items.length&&<p className="empty-hint">请先到提示词库添加配置</p>}</section>;
+}
+
+function PromptLibraryDialog({connected,onClose,onSaved}:{connected:boolean;onClose:()=>void;onSaved:()=>void}) {
+  const [kind,setKind]=useState<"writing"|"cover">("writing");
+  const [items,setItems]=useState<PromptTemplate[]>([]); const [name,setName]=useState(""); const [text,setText]=useState("");
+  const load=()=>connected&&fetch(`${API}/api/prompts`).then(r=>r.json()).then(setItems).catch(()=>{});
+  useEffect(()=>{if(connected) void fetch(`${API}/api/prompts`).then(r=>r.json()).then(setItems).catch(()=>{});},[connected]);
+  const add=async()=>{if(!name.trim()||!text.trim())return;const res=await fetch(`${API}/api/prompts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kind,name,text})});if(res.ok){setName("");setText("");load();onSaved();}};
+  const update=async(item:PromptTemplate)=>{await fetch(`${API}/api/prompts/${item.id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:item.name,text:item.text})});load();onSaved();};
+  const remove=async(id:string)=>{await fetch(`${API}/api/prompts/${id}`,{method:"DELETE"});load();onSaved();};
+  const visible=items.filter(x=>x.kind===kind);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal prompt-library"><div className="modal-head"><div><p className="eyebrow">全局配置</p><h2>提示词库</h2><p className="modal-subtitle">集中维护模板，新建工作流时直接勾选</p></div><button className="close" onClick={onClose}>×</button></div><div className="library-tabs"><button className={kind==="writing"?"active":""} onClick={()=>setKind("writing")}>分享稿提示词</button><button className={kind==="cover"?"active":""} onClick={()=>setKind("cover")}>封面提示词</button></div><div className="template-list">{visible.map((item,index)=><article key={item.id}><span className="template-number">{String(index+1).padStart(2,"0")}</span><div><input aria-label="提示词名称" value={item.name} onChange={e=>setItems(items.map(x=>x.id===item.id?{...x,name:e.target.value}:x))}/><textarea aria-label="提示词内容" value={item.text} onChange={e=>setItems(items.map(x=>x.id===item.id?{...x,text:e.target.value}:x))}/><div className="template-actions"><button onClick={()=>remove(item.id)}>删除</button><button className="save-prompt" onClick={()=>update(item)}>保存修改</button></div></div></article>)}</div><section className="new-template"><h3>添加新模板</h3><input value={name} onChange={e=>setName(e.target.value)} placeholder="模板名称"/><textarea value={text} onChange={e=>setText(e.target.value)} placeholder={kind==="writing"?"描述分享稿的语气、结构和长度要求":"描述封面的风格、构图和色彩要求"}/><button className="primary" disabled={!connected||!name.trim()||!text.trim()} onClick={add}>＋ 添加到提示词库</button></section></div></div>;
 }
 
 function DetailPanel({task,onClose,onRetry}:{task:Workflow;onClose:()=>void;onRetry:()=>void}) {
@@ -167,9 +185,9 @@ function DetailPanel({task,onClose,onRetry}:{task:Workflow;onClose:()=>void;onRe
 function EmptyMedia({text}:{text:string}) { return <div className="empty-media"><span>◇</span><p>{text}</p></div> }
 
 function SettingsDialog({connected,onClose,onSaved}:{connected:boolean;onClose:()=>void;onSaved:()=>void}) {
-  const [form,setForm]=useState({api_base:"https://api.openai.com/v1",model:"gpt-4o-mini",api_key:"",azure_speech_key:"",azure_speech_region:"eastus",voice_format:"audio-24khz-48kbitrate-mono-mp3",voices:["zh-CN-XiaoxiaoNeural"]});
-  const [voiceList,setVoiceList]=useState<string[]>(["zh-CN-XiaoxiaoNeural","zh-CN-YunxiNeural","zh-CN-XiaoyiNeural"]); const [saving,setSaving]=useState(false);
-  useEffect(()=>{if(connected){fetch(`${API}/api/settings`).then(r=>r.json()).then(setForm).catch(()=>{});fetch(`${API}/api/voices`).then(r=>r.json()).then(d=>setVoiceList(d.voices)).catch(()=>{});}},[connected]);
+  const [form,setForm]=useState({api_base:"https://api.teamorouter.com/v1",model:"gpt-5.4-mini",image_model:"gpt-image-2",api_key:"",azure_speech_key:"",azure_speech_region:"eastus",voice_format:"audio-24khz-48kbitrate-mono-mp3",voices:["zh-CN-XiaoxiaoNeural"]});
+  const [models,setModels]=useState<string[]>([]); const [voiceList,setVoiceList]=useState<string[]>(["zh-CN-XiaoxiaoNeural","zh-CN-YunxiNeural","zh-CN-XiaoyiNeural"]); const [saving,setSaving]=useState(false);
+  useEffect(()=>{if(connected){fetch(`${API}/api/settings`).then(r=>r.json()).then(setForm).catch(()=>{});fetch(`${API}/api/voices`).then(r=>r.json()).then(d=>setVoiceList(d.voices)).catch(()=>{});fetch(`${API}/api/models`).then(r=>r.json()).then(d=>setModels(d.models)).catch(()=>{});}},[connected]);
   const save=async()=>{if(!connected){onSaved();return;}setSaving(true);try{await fetch(`${API}/api/settings`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(form)});onSaved();}finally{setSaving(false)}};
-  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal settings-modal"><div className="modal-head"><div><p className="eyebrow">创作引擎</p><h2>接口与声音设置</h2></div><button className="close" onClick={onClose}>×</button></div><div className="settings-block"><h3>大模型接口</h3><label>API 地址<input value={form.api_base} onChange={e=>setForm({...form,api_base:e.target.value})}/></label><div className="form-grid"><label>模型<input value={form.model} onChange={e=>setForm({...form,model:e.target.value})}/></label><label>API 密钥<input type="password" value={form.api_key} onChange={e=>setForm({...form,api_key:e.target.value})} placeholder="sk-…"/></label></div></div><div className="settings-block"><h3>微软语音服务</h3><div className="form-grid"><label>区域<input value={form.azure_speech_region} onChange={e=>setForm({...form,azure_speech_region:e.target.value})}/></label><label>Speech 密钥<input type="password" value={form.azure_speech_key} onChange={e=>setForm({...form,azure_speech_key:e.target.value})}/></label></div><label>音频格式<select value={form.voice_format} onChange={e=>setForm({...form,voice_format:e.target.value})}><option>audio-24khz-48kbitrate-mono-mp3</option><option>audio-16khz-32kbitrate-mono-mp3</option><option>riff-24khz-16bit-mono-pcm</option></select></label><div className="choice-field"><span>默认音色（可多选）</span><div className="voice-choices">{voiceList.map(v=><button type="button" aria-pressed={form.voices.includes(v)} className={form.voices.includes(v)?"selected":""} key={v} onClick={()=>setForm({...form,voices:form.voices.includes(v)?form.voices.filter(x=>x!==v):[...form.voices,v]})}>{form.voices.includes(v)?"✓ ":""}{v}</button>)}</div></div></div><p className="privacy-note">密钥仅保存在本机数据库中。未配置密钥时，系统会使用演示内容跑通完整流程。</p><div className="modal-actions"><button className="secondary" onClick={onClose}>取消</button><button className="primary" onClick={save} disabled={saving}>{saving?"保存中…":"保存设置"}</button></div></div></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal settings-modal"><div className="modal-head"><div><p className="eyebrow">创作引擎</p><h2>接口与声音设置</h2></div><button className="close" onClick={onClose}>×</button></div><div className="settings-block"><h3>TeamoRouter · OpenAI 兼容接口</h3><label>API 地址<input value={form.api_base} onChange={e=>setForm({...form,api_base:e.target.value})}/></label><div className="form-grid"><label>文案模型{models.length?<select value={form.model} onChange={e=>setForm({...form,model:e.target.value})}>{models.filter(m=>m!=="gpt-image-2").map(m=><option key={m}>{m}</option>)}</select>:<input value={form.model} onChange={e=>setForm({...form,model:e.target.value})}/>}</label><label>图片模型<input value={form.image_model} onChange={e=>setForm({...form,image_model:e.target.value})}/></label><label>API 密钥<input type="password" value={form.api_key} onChange={e=>setForm({...form,api_key:e.target.value})} placeholder="已优先读取 .env"/></label></div></div><div className="settings-block"><h3>微软语音服务</h3><div className="form-grid"><label>区域<input value={form.azure_speech_region} onChange={e=>setForm({...form,azure_speech_region:e.target.value})}/></label><label>Speech 密钥<input type="password" value={form.azure_speech_key} onChange={e=>setForm({...form,azure_speech_key:e.target.value})} placeholder="已优先读取 .env"/></label></div><label>音频格式<select value={form.voice_format} onChange={e=>setForm({...form,voice_format:e.target.value})}><option>audio-24khz-48kbitrate-mono-mp3</option><option>audio-16khz-32kbitrate-mono-mp3</option><option>riff-24khz-16bit-mono-pcm</option></select></label><div className="choice-field"><span>默认音色（可多选）</span><div className="voice-choices">{voiceList.map(v=><button type="button" aria-pressed={form.voices.includes(v)} className={form.voices.includes(v)?"selected":""} key={v} onClick={()=>setForm({...form,voices:form.voices.includes(v)?form.voices.filter(x=>x!==v):[...form.voices,v]})}>{form.voices.includes(v)?"✓ ":""}{v}</button>)}</div></div></div><p className="privacy-note">密钥从本机 .env 自动读取，不会发送到前端或写入源码。</p><div className="modal-actions"><button className="secondary" onClick={onClose}>取消</button><button className="primary" onClick={save} disabled={saving}>{saving?"保存中…":"保存设置"}</button></div></div></div>;
 }

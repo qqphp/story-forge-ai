@@ -25,6 +25,8 @@ python -m uvicorn backend.main:app --reload --port 8000
 - 大模型支持 OpenAI 兼容的 `/models` 和 `/chat/completions` 接口，可配置中转站地址、模型与密钥。
 - 微软语音支持区域、密钥、输出格式和多个默认音色；音色列表通过微软接口查询。
 - 分享稿会保留原稿，并单独生成经过 Humanizer-zh 原则优化的自然化版本。
+- 分享稿与封面提示词在独立的“提示词库”集中维护，新建工作流时只需勾选模板。
+- TeamoRouter 默认使用 `https://api.teamorouter.com/v1`，文案模型、图片模型均可在设置中调整。
 
 也可以从 `.env.example` 复制环境变量进行配置。密钥不会进入源码；页面保存的设置仅存储在本机 `data/storyforge.db`。
 

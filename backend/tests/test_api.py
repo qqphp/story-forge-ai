@@ -36,6 +36,27 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["api_key"], "••••••••")
 
+    def test_prompt_template_crud(self):
+        initial = self.client.get("/api/prompts").json()
+        self.assertGreaterEqual(len(initial), 3)
+        created = self.client.post("/api/prompts", json={"kind": "writing", "name": "测试模板", "text": "自然地讲述"})
+        self.assertEqual(created.status_code, 201)
+        prompt_id = created.json()["id"]
+        updated = self.client.put(f"/api/prompts/{prompt_id}", json={"name": "已更新", "text": "避免空泛表达"})
+        self.assertEqual(updated.json()["name"], "已更新")
+        self.assertEqual(self.client.delete(f"/api/prompts/{prompt_id}").status_code, 204)
+
+    def test_workflow_snapshots_selected_prompts(self):
+        prompts = self.client.get("/api/prompts").json()
+        writing = next(p for p in prompts if p["kind"] == "writing")
+        cover = next(p for p in prompts if p["kind"] == "cover")
+        with patch.object(main, "process_workflow"):
+            response = self.client.post("/api/workflows", json={"book_title": "测试书", "writing_prompt_ids": [writing["id"]], "cover_prompt_ids": [cover["id"]]})
+        self.assertEqual(response.status_code, 202)
+        workflow = self.client.get(f"/api/workflows/{response.json()['id']}").json()
+        self.assertEqual(workflow["writing_prompts"][0]["id"], writing["id"])
+        self.assertEqual(workflow["cover_prompts"][0]["id"], cover["id"])
+
 
 if __name__ == "__main__":
     unittest.main()
