@@ -63,6 +63,26 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(main.audio_extension("webm-24khz-16bit-mono-opus"), ".webm")
         self.assertEqual(main.audio_extension("raw-24khz-16bit-mono-pcm"), ".pcm")
 
+    def test_delete_workflow_removes_only_its_media(self):
+        prompts = self.client.get("/api/prompts").json()
+        writing = next(p for p in prompts if p["kind"] == "writing")
+        cover = next(p for p in prompts if p["kind"] == "cover")
+        with patch.object(main, "process_workflow"):
+            created = self.client.post("/api/workflows", json={"book_title": "待删除", "writing_prompt_ids": [writing["id"]], "cover_prompt_ids": [cover["id"]]})
+        workflow_id = created.json()["id"]
+        owned_cover = main.MEDIA / f"{workflow_id}-cover-1.png"
+        owned_audio = main.MEDIA / f"{workflow_id}-d1-v1.mp3"
+        unrelated = main.MEDIA / "another-workflow-cover-1.png"
+        owned_cover.write_bytes(b"cover"); owned_audio.write_bytes(b"audio"); unrelated.write_bytes(b"keep")
+        with main.db() as conn:
+            conn.execute("UPDATE workflows SET status='completed' WHERE id=?", (workflow_id,))
+        response = self.client.delete(f"/api/workflows/{workflow_id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["removed_files"], 2)
+        self.assertFalse(owned_cover.exists()); self.assertFalse(owned_audio.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertEqual(self.client.get(f"/api/workflows/{workflow_id}").status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

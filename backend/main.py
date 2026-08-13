@@ -104,6 +104,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/media", StaticFiles(directory=MEDIA), name="media")
+DELETING_WORKFLOWS: set[str] = set()
 
 
 class PromptItem(BaseModel):
@@ -184,6 +185,17 @@ def save_workflow(wid: str, *, status: str | None = None, step: int | None = Non
              progress if progress is not None else row["progress"], int(time.time()),
              json.dumps(payload, ensure_ascii=False), wid),
         )
+
+
+def cleanup_workflow_media(wid: str) -> int:
+    media_root = MEDIA.resolve()
+    removed = 0
+    for candidate in MEDIA.iterdir():
+        resolved = candidate.resolve()
+        if candidate.is_file() and resolved.parent == media_root and candidate.name.startswith(f"{wid}-"):
+            candidate.unlink()
+            removed += 1
+    return removed
 
 
 async def llm(messages: list[dict[str, str]], settings: dict[str, Any]) -> str | None:
@@ -319,6 +331,7 @@ async def process_workflow(wid: str) -> None:
             {"role": "system", "content": "你是严谨的中文图书编辑。只输出100字左右的书籍简介，不虚构具体事实。"},
             {"role": "user", "content": f"书名：{title}；作者：{author or '未知'}；版本：{item['edition'] or '未指定'}"},
         ], settings)
+        if wid in DELETING_WORKFLOWS: return
         description = description or f"《{title}》是一部值得慢下来阅读的作品。它从人与世界的关系出发，在细节与思考之间，带领读者重新理解选择、成长与生活的意义。"
         save_workflow(wid, step=2, progress=24, payload_update={"description": description})
 
@@ -326,6 +339,7 @@ async def process_workflow(wid: str) -> None:
         if not prompts: prompts = [{"text": "适合短视频口播，真诚、有洞见", "enabled": True}]
         originals, polished = [], []
         for i, prompt in enumerate(prompts):
+            if wid in DELETING_WORKFLOWS: return
             raw = await llm([
                 {"role": "system", "content": "你是专业读书博主。写一篇500字以内、事实谨慎、适合口播的中文分享稿。"},
                 {"role": "user", "content": f"书名：{title}\n作者：{author}\n简介：{description}\n额外要求：{prompt['text']}"},
@@ -336,6 +350,7 @@ async def process_workflow(wid: str) -> None:
                 {"role": "system", "content": "按 Humanizer-zh 的目标优化中文：去除AI腔、空泛排比和过度总结，保留事实和观点，口语自然。只输出优化稿。"},
                 {"role": "user", "content": raw},
             ], settings)
+            if wid in DELETING_WORKFLOWS: return
             polished.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": improved or raw.replace("真正动人的地方", "我最喜欢的是")})
         save_workflow(wid, step=3, progress=45, payload_update={"original_drafts": originals, "polished_drafts": polished})
 
@@ -343,9 +358,11 @@ async def process_workflow(wid: str) -> None:
         audio_items = []
         for di, draft in enumerate(polished):
             for vi, voice in enumerate(voices):
+                if wid in DELETING_WORKFLOWS: return
                 base = MEDIA / f"{wid}-d{di+1}-v{vi+1}"
                 target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
                 used_real_speech = await speech(draft["text"], voice, settings, target)
+                if wid in DELETING_WORKFLOWS: return
                 actual = target if target.exists() else base.with_suffix(".wav")
                 audio_items.append({"draft_id": draft["id"], "voice": voice, "url": f"/media/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
         save_workflow(wid, step=4, progress=65, payload_update={"audio": audio_items})
@@ -354,14 +371,17 @@ async def process_workflow(wid: str) -> None:
         if not cover_prompts: cover_prompts = [{"text": "克制、文学感、适合短视频竖版", "enabled": True}]
         covers = []
         for i, prompt in enumerate(cover_prompts):
+            if wid in DELETING_WORKFLOWS: return
             path = MEDIA / f"{wid}-cover-{i+1}.png"
             used_real_image = await generate_cover(path, title, author, description, prompt["text"], i, settings)
+            if wid in DELETING_WORKFLOWS: return
             covers.append({"prompt": prompt["text"], "url": f"/media/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
         save_workflow(wid, step=5, progress=82, payload_update={"covers": covers})
 
         videos = []
         ffmpeg = os.getenv("FFMPEG_PATH", "ffmpeg")
         for i, audio in enumerate(audio_items):
+            if wid in DELETING_WORKFLOWS: return
             cover = MEDIA / Path(covers[i % len(covers)]["url"]).name
             audio_path = MEDIA / Path(audio["url"]).name
             out = MEDIA / f"{wid}-video-{i+1}.mp4"
@@ -374,6 +394,10 @@ async def process_workflow(wid: str) -> None:
         save_workflow(wid, status="completed", step=6, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save_workflow(wid, status="failed", payload_update={"error": str(exc)[:500]})
+    finally:
+        if wid in DELETING_WORKFLOWS:
+            cleanup_workflow_media(wid)
+            DELETING_WORKFLOWS.discard(wid)
 
 
 @app.get("/api/health")
@@ -473,6 +497,18 @@ def workflow_get(wid: str):
     with db() as conn: row = conn.execute("SELECT * FROM workflows WHERE id=?", (wid,)).fetchone()
     if not row: raise HTTPException(404, "工作流不存在")
     return workflow_row(row)
+
+
+@app.delete("/api/workflows/{wid}")
+def workflow_delete(wid: str):
+    with db() as conn:
+        row = conn.execute("SELECT status FROM workflows WHERE id=?", (wid,)).fetchone()
+        if not row: raise HTTPException(404, "工作流不存在")
+        if row["status"] in ("queued", "running"):
+            DELETING_WORKFLOWS.add(wid)
+        removed_files = cleanup_workflow_media(wid)
+        conn.execute("DELETE FROM workflows WHERE id=?", (wid,))
+    return {"deleted": True, "removed_files": removed_files}
 
 
 @app.post("/api/workflows", status_code=202)
