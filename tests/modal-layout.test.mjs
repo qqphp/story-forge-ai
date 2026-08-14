@@ -24,3 +24,10 @@ test("long model lists stay inside the settings dialog", () => {
   assert.match(css, /\.model-select\{[^}]*position:relative/);
   assert.match(css, /\.model-dropdown\{[^}]*position:absolute/);
 });
+
+test("audio format uses the same contained floating picker", () => {
+  assert.doesNotMatch(page, /音频格式<select/);
+  assert.match(page, /<FormatSelect/);
+  assert.match(css, /\.format-control\{[^}]*margin-top:/);
+  assert.match(css, /\.settings-pane \.settings-block>label\+\.form-grid\{[^}]*margin-top:/);
+});

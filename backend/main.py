@@ -455,7 +455,7 @@ async def voices():
         response = await client.get(f"https://{settings['azure_speech_region']}.tts.speech.microsoft.com/cognitiveservices/voices/list",
                                     headers={"Ocp-Apim-Subscription-Key": key})
         response.raise_for_status()
-    return {"voices": [v["ShortName"] for v in response.json() if v.get("Locale", "").startswith("zh-")], "demo": False}
+    return {"voices": [v["ShortName"] for v in response.json() if v.get("ShortName")], "demo": False}
 
 
 @app.get("/api/prompts")

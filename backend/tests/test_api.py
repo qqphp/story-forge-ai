@@ -1,4 +1,5 @@
 import tempfile
+import asyncio
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -86,6 +87,18 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(main.audio_extension("ogg-48khz-16bit-mono-opus"), ".ogg")
         self.assertEqual(main.audio_extension("webm-24khz-16bit-mono-opus"), ".webm")
         self.assertEqual(main.audio_extension("raw-24khz-16bit-mono-pcm"), ".pcm")
+
+    def test_voices_returns_every_available_locale(self):
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return [{"ShortName": "zh-CN-XiaoxiaoNeural"}, {"ShortName": "en-US-JennyNeural"}, {"ShortName": "ja-JP-NanamiNeural"}]
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): pass
+            async def get(self, *_args, **_kwargs): return Response()
+        with patch.object(main, "get_settings", return_value={"azure_speech_key": "test", "azure_speech_region": "eastus"}), patch.object(main.httpx, "AsyncClient", return_value=Client()):
+            result = asyncio.run(main.voices())
+        self.assertEqual(result["voices"], ["zh-CN-XiaoxiaoNeural", "en-US-JennyNeural", "ja-JP-NanamiNeural"])
 
     def test_delete_workflow_removes_only_its_media(self):
         prompts = self.client.get("/api/prompts").json()
