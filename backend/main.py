@@ -134,7 +134,7 @@ class WorkflowOptions(BaseModel):
     voice: str = Field(default="zh-CN-XiaoxiaoNeural", min_length=1, max_length=120)
     speech_rate: int = Field(default=0, ge=-50, le=100)
     background_music_id: str | None = Field(default=None, max_length=40)
-    background_music_volume: int = Field(default=20, ge=0, le=100)
+    background_music_volume: float = Field(default=.2, ge=0, le=1)
     background_music_fade_in: float = Field(default=2, ge=0, le=10)
     background_music_fade_out: float = Field(default=2, ge=0, le=10)
 
@@ -341,7 +341,7 @@ def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
 
 def speech_ssml(text: str, voice: str, rate: int,
                 background_music: dict[str, Any] | None = None,
-                background_volume: int = 20,
+                background_volume: float = .2,
                 background_fade_in: float = 2,
                 background_fade_out: float = 2) -> str:
     safe_rate = max(-50, min(100, int(rate)))
@@ -350,11 +350,12 @@ def speech_ssml(text: str, voice: str, rate: int,
         namespace += ' xmlns:mstts="https://www.w3.org/2001/mstts"'
     background = ""
     if background_music:
-        volume = max(0, min(100, int(background_volume)))
+        volume = max(0, min(1, float(background_volume)))
+        volume_text = f"{volume:.2f}".rstrip("0").rstrip(".")
         fade_in = max(0, min(10000, round(float(background_fade_in) * 1000)))
         fade_out = max(0, min(10000, round(float(background_fade_out) * 1000)))
         source = html.escape(str(background_music["url"]), quote=True)
-        background = (f'<mstts:backgroundaudio src="{source}" volume="{volume}" '
+        background = (f'<mstts:backgroundaudio src="{source}" volume="{volume_text}" '
                       f'fadein="{fade_in}" fadeout="{fade_out}"/>')
     return (f'<speak version="1.0"{namespace} xml:lang="{html.escape(voice_locale(voice), quote=True)}">{background}'
             f'<voice name="{html.escape(voice, quote=True)}">'
@@ -363,7 +364,7 @@ def speech_ssml(text: str, voice: str, rate: int,
 
 async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], output: Path,
                  background_music: dict[str, Any] | None = None,
-                 background_volume: int = 20,
+                 background_volume: float = .2,
                  background_fade_in: float = 2,
                  background_fade_out: float = 2) -> bool:
     key = settings.get("azure_speech_key")
@@ -420,13 +421,13 @@ def probe_audio_duration(path: Path) -> float | None:
 
 
 def video_command(ffmpeg: str, cover: Path, narration: Path, output: Path,
-                  music: Path | None = None, volume: int = 20,
+                  music: Path | None = None, volume: float = .2,
                   fade_in: float = 2, fade_out: float = 2,
                   duration: float | None = None) -> list[str]:
     command = [ffmpeg, "-y", "-loop", "1", "-i", str(cover), "-i", str(narration)]
     if music:
         command += ["-stream_loop", "-1", "-i", str(music)]
-        music_filters = [f"volume={max(0, min(100, volume)) / 100:.2f}"]
+        music_filters = [f"volume={max(0, min(1, volume)):.2f}"]
         if fade_in > 0:
             music_filters.append(f"afade=t=in:st=0:d={fade_in:g}")
         if fade_out > 0 and duration:
@@ -486,7 +487,7 @@ async def process_workflow(wid: str) -> None:
                 used_real_speech = await speech(
                     draft["text"], voice, speech_rate, settings, target,
                     background_music,
-                    item.get("background_music_volume", 20),
+                    item.get("background_music_volume", .2),
                     item.get("background_music_fade_in", 2),
                     item.get("background_music_fade_out", 2),
                 )

@@ -68,6 +68,9 @@ test("workflow creation supports background music mixing controls", () => {
   assert.match(page, /function MusicMixControl/);
   assert.match(page, /background_music_id:musicId\|\|null/);
   assert.match(page, /background_music_volume:musicVolume/);
+  assert.match(page, /const \[musicVolume,setMusicVolume\]=useState\(0\.2\)/);
+  assert.equal((page.match(/\[musicVolume,setMusicVolume\]=useState\(0\.2\)/g) || []).length, 2);
+  assert.match(page, /音量 <b>\{volume\.toFixed\(2\)\}<\/b>[\s\S]*?type="range" min="0" max="1" step="0\.05"/);
   assert.match(page, /淡入时间/);
   assert.match(page, /淡出时间/);
   assert.match(css, /\.music-mix-grid/);

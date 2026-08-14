@@ -82,12 +82,18 @@ class StoryForgeApiTests(unittest.TestCase):
     def test_workflow_snapshots_background_music_mix(self):
         music = self.client.post("/api/background-music", json={"name": "夜读", "url": "https://example.com/night.mp3", "category": "安静"}).json()
         with patch.object(main, "process_workflow"):
-            response = self.client.post("/api/workflows", json={"book_title": "混音测试", "background_music_id": music["id"], "background_music_volume": 35, "background_music_fade_in": 1.5, "background_music_fade_out": 4})
+            response = self.client.post("/api/workflows", json={"book_title": "混音测试", "background_music_id": music["id"], "background_music_volume": .35, "background_music_fade_in": 1.5, "background_music_fade_out": 4})
         workflow = self.client.get(f"/api/workflows/{response.json()['id']}").json()
         self.assertEqual(workflow["background_music"]["name"], "夜读")
-        self.assertEqual(workflow["background_music_volume"], 35)
+        self.assertEqual(workflow["background_music_volume"], .35)
         self.assertEqual(workflow["background_music_fade_in"], 1.5)
         self.assertEqual(workflow["background_music_fade_out"], 4)
+
+        rejected = self.client.post("/api/workflows", json={
+            "book_title": "音量超限", "background_music_id": music["id"],
+            "background_music_volume": 1.01,
+        })
+        self.assertEqual(rejected.status_code, 422)
 
     def test_batch_workflow_creation_uses_shared_configuration(self):
         prompts = self.client.get("/api/prompts").json()
@@ -100,12 +106,13 @@ class StoryForgeApiTests(unittest.TestCase):
         workflows = self.client.get("/api/workflows").json()
         self.assertEqual({item["book_title"] for item in workflows}, {"第一本", "第二本"})
         self.assertTrue(all(item["voices"] == ["en-US-JennyNeural"] and item["speech_rate"] == 10 for item in workflows))
+        self.assertTrue(all(item["background_music_volume"] == .2 for item in workflows))
         self.assertTrue(all(item["writing_prompts"][0]["id"] == writing["id"] and item["cover_prompts"][0]["id"] == cover["id"] for item in workflows))
 
     def test_speech_ssml_puts_background_audio_before_voice(self):
         ssml = main.speech_ssml(
             "带背景音乐的口播", "zh-CN-XiaoxiaoNeural", 0,
-            {"url": "https://example.com/music?a=1&b=2"}, 35, 1.5, 4,
+            {"url": "https://example.com/music?a=1&b=2"}, .35, 1.5, 4,
         )
         root = ET.fromstring(ssml)
         children = list(root)
@@ -113,7 +120,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertTrue(children[1].tag.endswith("voice"))
         self.assertEqual(children[0].attrib, {
             "src": "https://example.com/music?a=1&b=2",
-            "volume": "35", "fadein": "1500", "fadeout": "4000",
+            "volume": "0.35", "fadein": "1500", "fadeout": "4000",
         })
 
     def test_batch_runner_processes_workflows_concurrently(self):
