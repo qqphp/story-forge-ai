@@ -15,3 +15,10 @@ test("workflow voice and speech rate use matching control cards", () => {
   assert.match(page, /<VoiceControl[^>]*label="配音音色"/);
   assert.match(css, /\.workflow-speech-grid>\*\{[^}]*min-height:/);
 });
+
+test("long model lists stay inside the settings dialog", () => {
+  assert.doesNotMatch(page, /models\.length\?<select/);
+  assert.match(page, /<ModelSelect/);
+  assert.match(css, /\.model-options\{[^}]*max-height:/);
+  assert.match(css, /\.model-options\{[^}]*overflow:auto/);
+});
