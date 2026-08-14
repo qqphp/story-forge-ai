@@ -31,3 +31,29 @@ test("audio format uses the same contained floating picker", () => {
   assert.match(css, /\.format-control\{[^}]*margin-top:/);
   assert.match(css, /\.settings-pane \.settings-block>label\+\.form-grid\{[^}]*margin-top:/);
 });
+
+test("model and voice configuration are separated", () => {
+  assert.match(page, />模型配置<\/button>/);
+  assert.match(page, />语音设置<\/button>/);
+  assert.match(page, /<h2>模型配置<\/h2>/);
+  assert.match(page, /<b>配置说明<\/b>/);
+  assert.match(page, /<h2>语音设置<\/h2>/);
+  assert.match(page, /<b>微软语音服务<\/b>/);
+  assert.match(page, /<b>音色中心<\/b>/);
+  assert.match(page, /<b>背景音乐<\/b>/);
+});
+
+test("voice center provides global search preview pagination and offline download", () => {
+  assert.match(page, /api\/voices\/\$\{encodeURIComponent\(voice\)\}\/preview/);
+  assert.match(page, /api\/voices\/download-all/);
+  assert.match(page, /搜索音色、语言、地区或性别/);
+  assert.match(page, /试听文案：你好，欢迎收听这款流程、自然的AI配音。/);
+  assert.match(page, /<Pagination page=\{voicePage\}/);
+});
+
+test("background music supports HTTPS entry search and pagination", () => {
+  assert.match(page, /api\/background-music/);
+  assert.match(page, /HTTPS 音频地址/);
+  assert.match(page, /搜索名称或分类/);
+  assert.match(page, /<Pagination page=\{musicPage\}/);
+});

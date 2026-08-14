@@ -14,14 +14,15 @@ class StoryForgeApiTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(main, "DB_PATH", Path(self.temp.name) / "test.db")
         self.media_patch = patch.object(main, "MEDIA", Path(self.temp.name) / "media")
-        self.db_patch.start(); self.media_patch.start()
-        main.MEDIA.mkdir(exist_ok=True)
+        self.voice_samples_patch = patch.object(main, "VOICE_SAMPLES", Path(self.temp.name) / "voice_samples")
+        self.db_patch.start(); self.media_patch.start(); self.voice_samples_patch.start()
+        main.MEDIA.mkdir(exist_ok=True); main.VOICE_SAMPLES.mkdir(exist_ok=True)
         main.init_db()
         self.client = TestClient(main.app)
 
     def tearDown(self):
         self.client.close()
-        self.db_patch.stop(); self.media_patch.stop(); self.temp.cleanup()
+        self.db_patch.stop(); self.media_patch.stop(); self.voice_samples_patch.stop(); self.temp.cleanup()
 
     def test_health_and_empty_workflows(self):
         self.assertTrue(self.client.get("/api/health").json()["ok"])
@@ -99,6 +100,29 @@ class StoryForgeApiTests(unittest.TestCase):
         with patch.object(main, "get_settings", return_value={"azure_speech_key": "test", "azure_speech_region": "eastus"}), patch.object(main.httpx, "AsyncClient", return_value=Client()):
             result = asyncio.run(main.voices())
         self.assertEqual(result["voices"], ["zh-CN-XiaoxiaoNeural", "en-US-JennyNeural", "ja-JP-NanamiNeural"])
+        self.assertEqual([item["short_name"] for item in result["items"]], result["voices"])
+
+    def test_background_music_crud_search_and_https_validation(self):
+        invalid = self.client.post("/api/background-music", json={"name": "不安全地址", "url": "http://example.com/a.mp3", "category": "测试"})
+        malformed = self.client.post("/api/background-music", json={"name": "无域名", "url": "https://", "category": "测试"})
+        self.assertEqual(invalid.status_code, 422); self.assertEqual(malformed.status_code, 422)
+        created = self.client.post("/api/background-music", json={"name": "安静阅读", "url": "https://example.com/quiet.mp3", "category": "治愈"})
+        self.assertEqual(created.status_code, 201)
+        listing = self.client.get("/api/background-music", params={"q": "治愈", "page": 1, "page_size": 6}).json()
+        self.assertEqual(listing["total"], 1); self.assertEqual(listing["items"][0]["name"], "安静阅读")
+        self.assertEqual(self.client.delete(f"/api/background-music/{created.json()['id']}").status_code, 204)
+        self.assertEqual(self.client.get("/api/background-music").json()["total"], 0)
+
+    def test_voice_preview_uses_exact_sample_and_caches_mp3(self):
+        async def fake_speech(text, voice, rate, settings, target):
+            self.assertEqual(text, "你好，欢迎收听这款流程、自然的AI配音。")
+            self.assertEqual(voice, "en-US-JennyNeural"); self.assertEqual(settings["voice_format"], "audio-24khz-96kbitrate-mono-mp3")
+            target.write_bytes(b"ID3test"); return True
+        settings = {**main.DEFAULT_SETTINGS, "azure_speech_key": "test"}
+        with patch.object(main, "get_settings", return_value=settings), patch.object(main, "speech", side_effect=fake_speech):
+            response = self.client.get("/api/voices/en-US-JennyNeural/preview")
+        self.assertEqual(response.status_code, 200); self.assertEqual(response.headers["content-type"], "audio/mpeg")
+        self.assertTrue(main.voice_sample_path("en-US-JennyNeural").exists())
 
     def test_delete_workflow_removes_only_its_media(self):
         prompts = self.client.get("/api/prompts").json()

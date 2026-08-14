@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import html
 import io
 import json
@@ -15,22 +16,26 @@ import wave
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env", override=False)
 DATA = ROOT / "data"
 MEDIA = DATA / "media"
+VOICE_SAMPLES = DATA / "voice_samples"
 DB_PATH = DATA / "storyforge.db"
 DATA.mkdir(exist_ok=True)
 MEDIA.mkdir(exist_ok=True)
+VOICE_SAMPLES.mkdir(exist_ok=True)
 
 
 @contextmanager
@@ -63,6 +68,11 @@ def init_db() -> None:
               updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_prompt_templates_kind ON prompt_templates(kind);
+            CREATE TABLE IF NOT EXISTS background_music (
+              id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
+              category TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_background_music_created_at ON background_music(created_at DESC);
             """
         )
         count = conn.execute("SELECT COUNT(*) AS count FROM prompt_templates").fetchone()["count"]
@@ -105,7 +115,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/media", StaticFiles(directory=MEDIA), name="media")
+app.mount("/voice-samples", StaticFiles(directory=VOICE_SAMPLES), name="voice-samples")
 DELETING_WORKFLOWS: set[str] = set()
+VOICE_DOWNLOAD_STATUS: dict[str, Any] = {"status": "idle", "total": 0, "completed": 0, "failed": 0}
+VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流程、自然的AI配音。"
 
 
 class PromptItem(BaseModel):
@@ -147,6 +160,21 @@ class SettingsPayload(BaseModel):
     voice_format: str = "audio-24khz-48kbitrate-mono-mp3"
     voices: list[str] = ["zh-CN-XiaoxiaoNeural"]
     speech_rate: int = Field(default=0, ge=-50, le=100)
+
+
+class BackgroundMusicCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    url: str = Field(min_length=1, max_length=2000)
+    category: str = Field(default="", max_length=80)
+
+    @field_validator("url")
+    @classmethod
+    def require_https(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            raise ValueError("背景音乐链接必须使用 https")
+        return value
 
 
 def get_settings() -> dict[str, Any]:
@@ -446,16 +474,105 @@ async def models():
     return {"models": [m["id"] for m in response.json().get("data", [])], "demo": False}
 
 
-@app.get("/api/voices")
-async def voices():
-    settings = get_settings(); key = settings.get("azure_speech_key")
+async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, str]], bool]:
+    key = settings.get("azure_speech_key")
     if not key:
-        return {"voices": ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural"], "demo": True}
+        names = ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural"]
+        return ([{"short_name": name, "locale": "zh-CN", "local_name": name, "display_name": name, "gender": ""} for name in names], True)
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(f"https://{settings['azure_speech_region']}.tts.speech.microsoft.com/cognitiveservices/voices/list",
                                     headers={"Ocp-Apim-Subscription-Key": key})
         response.raise_for_status()
-    return {"voices": [v["ShortName"] for v in response.json() if v.get("ShortName")], "demo": False}
+    items = [{"short_name": v["ShortName"], "locale": v.get("Locale", ""), "local_name": v.get("LocalName", ""),
+              "display_name": v.get("DisplayName", ""), "gender": v.get("Gender", "")} for v in response.json() if v.get("ShortName")]
+    return items, False
+
+
+@app.get("/api/voices")
+async def voices():
+    items, demo = await fetch_voice_items(get_settings())
+    return {"voices": [item["short_name"] for item in items], "items": items, "demo": demo}
+
+
+def voice_sample_path(voice: str) -> Path:
+    digest = hashlib.sha256(voice.encode("utf-8")).hexdigest()[:20]
+    return VOICE_SAMPLES / f"{digest}.mp3"
+
+
+async def ensure_voice_sample(voice: str, settings: dict[str, Any]) -> Path:
+    target = voice_sample_path(voice)
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    preview_settings = {**settings, "voice_format": "audio-24khz-96kbitrate-mono-mp3"}
+    if not await speech(VOICE_SAMPLE_TEXT, voice, preview_settings.get("speech_rate", 0), preview_settings, target):
+        raise HTTPException(503, "请先配置微软语音服务密钥")
+    return target
+
+
+@app.get("/api/voices/{voice}/preview")
+async def voice_preview(voice: str):
+    target = await ensure_voice_sample(voice, get_settings())
+    return FileResponse(target, media_type="audio/mpeg")
+
+
+async def download_all_voice_samples() -> None:
+    settings = get_settings()
+    items, _ = await fetch_voice_items(settings)
+    VOICE_DOWNLOAD_STATUS.update(status="running", total=len(items), completed=0, failed=0)
+    for item in items:
+        try:
+            await ensure_voice_sample(item["short_name"], settings)
+            VOICE_DOWNLOAD_STATUS["completed"] += 1
+        except Exception:
+            VOICE_DOWNLOAD_STATUS["failed"] += 1
+    VOICE_DOWNLOAD_STATUS["status"] = "completed"
+
+
+@app.post("/api/voices/download-all", status_code=202)
+def voices_download_all(tasks: BackgroundTasks):
+    if VOICE_DOWNLOAD_STATUS["status"] in ("queued", "running"):
+        return VOICE_DOWNLOAD_STATUS
+    if not get_settings().get("azure_speech_key"):
+        raise HTTPException(400, "请先配置微软语音服务密钥")
+    VOICE_DOWNLOAD_STATUS.update(status="queued", total=0, completed=0, failed=0)
+    tasks.add_task(download_all_voice_samples)
+    return VOICE_DOWNLOAD_STATUS
+
+
+@app.get("/api/voices/download-all/status")
+def voices_download_status():
+    return VOICE_DOWNLOAD_STATUS
+
+
+@app.get("/api/background-music")
+def background_music_list(q: str = "", page: int = Query(1, ge=1), page_size: int = Query(8, ge=1, le=50)):
+    where, params = "", []
+    if q.strip():
+        where = " WHERE name LIKE ? OR category LIKE ?"
+        needle = f"%{q.strip()}%"; params = [needle, needle]
+    with db() as conn:
+        total = conn.execute(f"SELECT COUNT(*) AS count FROM background_music{where}", params).fetchone()["count"]
+        rows = conn.execute(f"SELECT * FROM background_music{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                            (*params, page_size, (page - 1) * page_size)).fetchall()
+    return {"items": [dict(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+
+
+@app.post("/api/background-music", status_code=201)
+def background_music_create(value: BackgroundMusicCreate):
+    music_id, now = uuid.uuid4().hex[:12], int(time.time())
+    with db() as conn:
+        conn.execute("INSERT INTO background_music(id,name,url,category,created_at) VALUES(?,?,?,?,?)",
+                     (music_id, value.name.strip(), value.url, value.category.strip(), now))
+        row = conn.execute("SELECT * FROM background_music WHERE id=?", (music_id,)).fetchone()
+    return dict(row)
+
+
+@app.delete("/api/background-music/{music_id}", status_code=204)
+def background_music_delete(music_id: str):
+    with db() as conn:
+        result = conn.execute("DELETE FROM background_music WHERE id=?", (music_id,))
+        if result.rowcount == 0:
+            raise HTTPException(404, "背景音乐不存在")
 
 
 @app.get("/api/prompts")
