@@ -47,7 +47,7 @@ test("voice center provides global search preview pagination and offline downloa
   assert.match(page, /api\/voices\/\$\{encodeURIComponent\(voice\)\}\/preview/);
   assert.match(page, /api\/voices\/download-all/);
   assert.match(page, /搜索音色、语言、地区或性别/);
-  assert.match(page, /试听文案：你好，欢迎收听这款流程、自然的AI配音。/);
+  assert.match(page, /试听文案：你好，欢迎收听这款流畅自然的AI配音。/);
   assert.match(page, /<Pagination page=\{voicePage\}/);
 });
 
@@ -56,4 +56,15 @@ test("background music supports HTTPS entry search and pagination", () => {
   assert.match(page, /HTTPS 音频地址/);
   assert.match(page, /搜索名称或分类/);
   assert.match(page, /<Pagination page=\{musicPage\}/);
+  assert.match(page, /method:editingMusicId\?"PUT":"POST"/);
+  assert.match(page, /<button onClick=\{\(\)=>setPlayingMusic\(item\)\}>试听<\/button>/);
+  assert.match(page, /<button onClick=\{\(\)=>editMusic\(item\)\}>编辑<\/button>/);
+  assert.match(page, /className="music-player"/);
+  assert.match(page, /<audio key=\{playingMusic\?\.id/);
+  assert.match(css, /\.music-list\{min-height:0\}/);
+});
+
+test("voice preview uses the fluent natural sample copy", () => {
+  assert.match(page, /你好，欢迎收听这款流畅自然的AI配音。/);
+  assert.doesNotMatch(page, /流程、自然的AI配音/);
 });

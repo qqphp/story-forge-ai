@@ -118,7 +118,7 @@ app.mount("/media", StaticFiles(directory=MEDIA), name="media")
 app.mount("/voice-samples", StaticFiles(directory=VOICE_SAMPLES), name="voice-samples")
 DELETING_WORKFLOWS: set[str] = set()
 VOICE_DOWNLOAD_STATUS: dict[str, Any] = {"status": "idle", "total": 0, "completed": 0, "failed": 0}
-VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流程、自然的AI配音。"
+VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流畅自然的AI配音。"
 
 
 class PromptItem(BaseModel):
@@ -494,17 +494,19 @@ async def voices():
     return {"voices": [item["short_name"] for item in items], "items": items, "demo": demo}
 
 
-def voice_sample_path(voice: str) -> Path:
-    digest = hashlib.sha256(voice.encode("utf-8")).hexdigest()[:20]
+def voice_sample_path(voice: str, speech_rate: int = 0) -> Path:
+    cache_key = f"{voice}|{speech_rate}|{VOICE_SAMPLE_TEXT}"
+    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:20]
     return VOICE_SAMPLES / f"{digest}.mp3"
 
 
 async def ensure_voice_sample(voice: str, settings: dict[str, Any]) -> Path:
-    target = voice_sample_path(voice)
+    speech_rate = settings.get("speech_rate", 0)
+    target = voice_sample_path(voice, speech_rate)
     if target.exists() and target.stat().st_size > 0:
         return target
     preview_settings = {**settings, "voice_format": "audio-24khz-96kbitrate-mono-mp3"}
-    if not await speech(VOICE_SAMPLE_TEXT, voice, preview_settings.get("speech_rate", 0), preview_settings, target):
+    if not await speech(VOICE_SAMPLE_TEXT, voice, speech_rate, preview_settings, target):
         raise HTTPException(503, "请先配置微软语音服务密钥")
     return target
 
@@ -563,6 +565,17 @@ def background_music_create(value: BackgroundMusicCreate):
     with db() as conn:
         conn.execute("INSERT INTO background_music(id,name,url,category,created_at) VALUES(?,?,?,?,?)",
                      (music_id, value.name.strip(), value.url, value.category.strip(), now))
+        row = conn.execute("SELECT * FROM background_music WHERE id=?", (music_id,)).fetchone()
+    return dict(row)
+
+
+@app.put("/api/background-music/{music_id}")
+def background_music_update(music_id: str, value: BackgroundMusicCreate):
+    with db() as conn:
+        result = conn.execute("UPDATE background_music SET name=?,url=?,category=? WHERE id=?",
+                              (value.name.strip(), value.url, value.category.strip(), music_id))
+        if result.rowcount == 0:
+            raise HTTPException(404, "背景音乐不存在")
         row = conn.execute("SELECT * FROM background_music WHERE id=?", (music_id,)).fetchone()
     return dict(row)
 

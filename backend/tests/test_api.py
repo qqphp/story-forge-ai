@@ -110,12 +110,14 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201)
         listing = self.client.get("/api/background-music", params={"q": "治愈", "page": 1, "page_size": 6}).json()
         self.assertEqual(listing["total"], 1); self.assertEqual(listing["items"][0]["name"], "安静阅读")
+        updated = self.client.put(f"/api/background-music/{created.json()['id']}", json={"name": "深夜阅读", "url": "https://example.com/night.mp3", "category": "安静"})
+        self.assertEqual(updated.status_code, 200); self.assertEqual(updated.json()["name"], "深夜阅读")
         self.assertEqual(self.client.delete(f"/api/background-music/{created.json()['id']}").status_code, 204)
         self.assertEqual(self.client.get("/api/background-music").json()["total"], 0)
 
     def test_voice_preview_uses_exact_sample_and_caches_mp3(self):
         async def fake_speech(text, voice, rate, settings, target):
-            self.assertEqual(text, "你好，欢迎收听这款流程、自然的AI配音。")
+            self.assertEqual(text, "你好，欢迎收听这款流畅自然的AI配音。")
             self.assertEqual(voice, "en-US-JennyNeural"); self.assertEqual(settings["voice_format"], "audio-24khz-96kbitrate-mono-mp3")
             target.write_bytes(b"ID3test"); return True
         settings = {**main.DEFAULT_SETTINGS, "azure_speech_key": "test"}
