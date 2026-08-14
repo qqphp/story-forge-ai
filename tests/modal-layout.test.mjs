@@ -21,4 +21,6 @@ test("long model lists stay inside the settings dialog", () => {
   assert.match(page, /<ModelSelect/);
   assert.match(css, /\.model-options\{[^}]*max-height:/);
   assert.match(css, /\.model-options\{[^}]*overflow:auto/);
+  assert.match(css, /\.model-select\{[^}]*position:relative/);
+  assert.match(css, /\.model-dropdown\{[^}]*position:absolute/);
 });
