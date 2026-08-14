@@ -135,8 +135,8 @@ class WorkflowOptions(BaseModel):
     speech_rate: int = Field(default=0, ge=-50, le=100)
     background_music_id: str | None = Field(default=None, max_length=40)
     background_music_volume: int = Field(default=20, ge=0, le=100)
-    background_music_fade_in: float = Field(default=2, ge=0, le=30)
-    background_music_fade_out: float = Field(default=2, ge=0, le=30)
+    background_music_fade_in: float = Field(default=2, ge=0, le=10)
+    background_music_fade_out: float = Field(default=2, ge=0, le=10)
 
 
 class BookCreate(BaseModel):
@@ -339,20 +339,41 @@ def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
         out.writeframes(frames)
 
 
-def speech_ssml(text: str, voice: str, rate: int) -> str:
+def speech_ssml(text: str, voice: str, rate: int,
+                background_music: dict[str, Any] | None = None,
+                background_volume: int = 20,
+                background_fade_in: float = 2,
+                background_fade_out: float = 2) -> str:
     safe_rate = max(-50, min(100, int(rate)))
-    return (f'<speak version="1.0" xml:lang="{html.escape(voice_locale(voice), quote=True)}"><voice name="{html.escape(voice, quote=True)}">'
+    namespace = ' xmlns="http://www.w3.org/2001/10/synthesis"'
+    if background_music:
+        namespace += ' xmlns:mstts="https://www.w3.org/2001/mstts"'
+    background = ""
+    if background_music:
+        volume = max(0, min(100, int(background_volume)))
+        fade_in = max(0, min(10000, round(float(background_fade_in) * 1000)))
+        fade_out = max(0, min(10000, round(float(background_fade_out) * 1000)))
+        source = html.escape(str(background_music["url"]), quote=True)
+        background = (f'<mstts:backgroundaudio src="{source}" volume="{volume}" '
+                      f'fadein="{fade_in}" fadeout="{fade_out}"/>')
+    return (f'<speak version="1.0"{namespace} xml:lang="{html.escape(voice_locale(voice), quote=True)}">{background}'
+            f'<voice name="{html.escape(voice, quote=True)}">'
             f'<prosody rate="{safe_rate:+d}%">{html.escape(text)}</prosody></voice></speak>')
 
 
-async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], output: Path) -> bool:
+async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], output: Path,
+                 background_music: dict[str, Any] | None = None,
+                 background_volume: int = 20,
+                 background_fade_in: float = 2,
+                 background_fade_out: float = 2) -> bool:
     key = settings.get("azure_speech_key")
     if not key:
         make_demo_wav(output.with_suffix(".wav"))
         return False
     region = settings.get("azure_speech_region", "eastus")
     fmt = settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")
-    ssml = speech_ssml(text, voice, rate)
+    ssml = speech_ssml(text, voice, rate, background_music, background_volume,
+                       background_fade_in, background_fade_out)
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
             f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
@@ -455,13 +476,20 @@ async def process_workflow(wid: str) -> None:
 
         voices = item.get("voices") or settings.get("voices") or ["zh-CN-XiaoxiaoNeural"]
         speech_rate = item.get("speech_rate", settings.get("speech_rate", 0))
+        background_music = item.get("background_music")
         audio_items = []
         for di, draft in enumerate(polished):
             for vi, voice in enumerate(voices):
                 if wid in DELETING_WORKFLOWS: return
                 base = MEDIA / f"{wid}-d{di+1}-v{vi+1}"
                 target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
-                used_real_speech = await speech(draft["text"], voice, speech_rate, settings, target)
+                used_real_speech = await speech(
+                    draft["text"], voice, speech_rate, settings, target,
+                    background_music,
+                    item.get("background_music_volume", 20),
+                    item.get("background_music_fade_in", 2),
+                    item.get("background_music_fade_out", 2),
+                )
                 if wid in DELETING_WORKFLOWS: return
                 actual = target if target.exists() else base.with_suffix(".wav")
                 audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
@@ -480,18 +508,12 @@ async def process_workflow(wid: str) -> None:
 
         videos = []
         ffmpeg = os.getenv("FFMPEG_PATH", "ffmpeg")
-        background_music = item.get("background_music")
-        background_path = await download_background_music(background_music, wid) if background_music else None
         for i, audio in enumerate(audio_items):
             if wid in DELETING_WORKFLOWS: return
             cover = MEDIA / Path(covers[i % len(covers)]["url"]).name
             audio_path = MEDIA / Path(audio["url"]).name
             out = MEDIA / f"{wid}-video-{i+1}.mp4"
-            duration = await asyncio.to_thread(probe_audio_duration, audio_path) if background_path else None
-            cmd = video_command(ffmpeg, cover, audio_path, out, background_path,
-                                item.get("background_music_volume", 20),
-                                item.get("background_music_fade_in", 2),
-                                item.get("background_music_fade_out", 2), duration)
+            cmd = video_command(ffmpeg, cover, audio_path, out)
             result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=180)
             if result.returncode == 0:
                 videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{out.name}",
@@ -790,13 +812,17 @@ def workflow_create(value: WorkflowCreate, tasks: BackgroundTasks):
     return {"id": wid, "status": "queued"}
 
 
+async def process_workflows_parallel(workflow_ids: list[str]) -> None:
+    await asyncio.gather(*(process_workflow(wid) for wid in workflow_ids))
+
+
 @app.post("/api/workflows/batch", status_code=202)
 def workflows_batch_create(value: BatchWorkflowCreate, tasks: BackgroundTasks):
     workflows = []
     for book in value.books:
         wid = create_workflow_record(book, value)
         workflows.append({"id": wid, "book_title": book.book_title, "status": "queued"})
-        tasks.add_task(process_workflow, wid)
+    tasks.add_task(process_workflows_parallel, [workflow["id"] for workflow in workflows])
     return {"count": len(workflows), "workflows": workflows}
 
 

@@ -1,6 +1,7 @@
 import tempfile
 import asyncio
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -101,12 +102,37 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertTrue(all(item["voices"] == ["en-US-JennyNeural"] and item["speech_rate"] == 10 for item in workflows))
         self.assertTrue(all(item["writing_prompts"][0]["id"] == writing["id"] and item["cover_prompts"][0]["id"] == cover["id"] for item in workflows))
 
-    def test_video_command_mixes_music_with_volume_and_fades(self):
-        command = main.video_command("ffmpeg", Path("cover.png"), Path("voice.mp3"), Path("out.mp4"), Path("music.mp3"), 35, 1.5, 4, 20)
-        joined = " ".join(command)
-        self.assertIn("-stream_loop -1", joined); self.assertIn("volume=0.35", joined)
-        self.assertIn("afade=t=in:st=0:d=1.5", joined); self.assertIn("afade=t=out:st=16:d=4", joined)
-        self.assertIn("amix=inputs=2:duration=first", joined)
+    def test_speech_ssml_puts_background_audio_before_voice(self):
+        ssml = main.speech_ssml(
+            "带背景音乐的口播", "zh-CN-XiaoxiaoNeural", 0,
+            {"url": "https://example.com/music?a=1&b=2"}, 35, 1.5, 4,
+        )
+        root = ET.fromstring(ssml)
+        children = list(root)
+        self.assertEqual(children[0].tag, "{https://www.w3.org/2001/mstts}backgroundaudio")
+        self.assertTrue(children[1].tag.endswith("voice"))
+        self.assertEqual(children[0].attrib, {
+            "src": "https://example.com/music?a=1&b=2",
+            "volume": "35", "fadein": "1500", "fadeout": "4000",
+        })
+
+    def test_batch_runner_processes_workflows_concurrently(self):
+        active = 0
+        maximum_active = 0
+        all_started = asyncio.Event()
+
+        async def fake_process(_wid):
+            nonlocal active, maximum_active
+            active += 1
+            maximum_active = max(maximum_active, active)
+            if active == 3:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=.2)
+            active -= 1
+
+        with patch.object(main, "process_workflow", side_effect=fake_process):
+            asyncio.run(main.process_workflows_parallel(["one", "two", "three"]))
+        self.assertEqual(maximum_active, 3)
 
     def test_speech_ssml_contains_safe_rate_and_escaped_content(self):
         ssml = main.speech_ssml("读书 < 思考", 'voice"name', 120)

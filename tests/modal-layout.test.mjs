@@ -75,7 +75,9 @@ test("workflow creation supports background music mixing controls", () => {
 
 test("batch creation starts with six rows and shares generation settings", () => {
   assert.match(page, /Array\.from\(\{length:6\}/);
-  assert.match(page, />批量制作<\/button>/);
+  assert.match(page, /className="primary batch-launch"/);
+  assert.match(page, /<span aria-hidden="true">▦<\/span>\s*批量制作/);
+  assert.match(css, /\.batch-launch\{background:#[0-9a-f]+;color:#fff\}/i);
   assert.match(page, /api\/workflows\/batch/);
   assert.match(page, /第 \{step\} 步 \/ 2/);
   assert.match(page, /共用配音设置/);

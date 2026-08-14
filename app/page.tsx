@@ -104,7 +104,7 @@ export default function Home() {
       <section className="content">
         <div className="hero-row">
           <div><p className="eyebrow">创作工作台</p><h1>把一本书，讲给更多人听。</h1><p className="subtitle">从书籍信息到文案、配音、封面与视频，一次输入，自动完成。</p></div>
-          <div className="hero-actions"><button className="primary" onClick={() => setShowCreate(true)}><span>＋</span> 开始新制作</button><button className="secondary batch-launch" onClick={()=>setShowBatch(true)}>批量制作</button></div>
+          <div className="hero-actions"><button className="primary" onClick={() => setShowCreate(true)}><span>＋</span> 开始新制作</button><button className="primary batch-launch" onClick={()=>setShowBatch(true)}><span aria-hidden="true">▦</span> 批量制作</button></div>
         </div>
 
         <div className="metrics">
@@ -173,7 +173,7 @@ function CreateDialog({ connected, onClose, onSubmit }: { connected: boolean; on
 }
 
 function MusicMixControl({music,musicId,setMusicId,volume,setVolume,fadeIn,setFadeIn,fadeOut,setFadeOut}:{music:BackgroundMusic[];musicId:string;setMusicId:(id:string)=>void;volume:number;setVolume:(value:number)=>void;fadeIn:number;setFadeIn:(value:number)=>void;fadeOut:number;setFadeOut:(value:number)=>void}) {
-  return <section className="workflow-music"><div><h3>背景音乐</h3><p>选填，合成视频时自动混入配音</p></div><label>选择背景音乐<select value={musicId} onChange={e=>setMusicId(e.target.value)}><option value="">不使用背景音乐</option>{music.map(item=><option key={item.id} value={item.id}>{item.name}{item.category?` · ${item.category}`:""}</option>)}</select></label>{musicId&&<div className="music-mix-grid"><label><span>音量 <b>{volume}%</b></span><input type="range" min="0" max="100" step="5" value={volume} onChange={e=>setVolume(Number(e.target.value))}/></label><label><span>淡入时间 <b>{fadeIn} 秒</b></span><input type="range" min="0" max="30" step="0.5" value={fadeIn} onChange={e=>setFadeIn(Number(e.target.value))}/></label><label><span>淡出时间 <b>{fadeOut} 秒</b></span><input type="range" min="0" max="30" step="0.5" value={fadeOut} onChange={e=>setFadeOut(Number(e.target.value))}/></label></div>}</section>;
+  return <section className="workflow-music"><div><h3>背景音乐</h3><p>选填，通过微软 SSML 与配音同时合成</p></div><label>选择背景音乐<select value={musicId} onChange={e=>setMusicId(e.target.value)}><option value="">不使用背景音乐</option>{music.map(item=><option key={item.id} value={item.id}>{item.name}{item.category?` · ${item.category}`:""}</option>)}</select></label>{musicId&&<div className="music-mix-grid"><label><span>音量 <b>{volume}%</b></span><input type="range" min="0" max="100" step="5" value={volume} onChange={e=>setVolume(Number(e.target.value))}/></label><label><span>淡入时间 <b>{fadeIn} 秒</b></span><input type="range" min="0" max="10" step="0.5" value={fadeIn} onChange={e=>setFadeIn(Number(e.target.value))}/></label><label><span>淡出时间 <b>{fadeOut} 秒</b></span><input type="range" min="0" max="10" step="0.5" value={fadeOut} onChange={e=>setFadeOut(Number(e.target.value))}/></label></div>}</section>;
 }
 
 function BatchCreateDialog({connected,onClose,onSubmit}:{connected:boolean;onClose:()=>void;onSubmit:(data:Record<string,unknown>)=>Promise<void>}) {
