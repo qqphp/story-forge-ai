@@ -32,6 +32,7 @@ load_dotenv(ROOT / ".env", override=False)
 DATA = ROOT / "data"
 MEDIA = DATA / "media"
 VOICE_SAMPLES = DATA / "voice_samples"
+VOICE_TRANSLATIONS_PATH = DATA / "voice_sample_translations.json"
 DB_PATH = DATA / "storyforge.db"
 DATA.mkdir(exist_ok=True)
 MEDIA.mkdir(exist_ok=True)
@@ -118,6 +119,7 @@ app.mount("/media", StaticFiles(directory=MEDIA), name="media")
 app.mount("/voice-samples", StaticFiles(directory=VOICE_SAMPLES), name="voice-samples")
 DELETING_WORKFLOWS: set[str] = set()
 VOICE_DOWNLOAD_STATUS: dict[str, Any] = {"status": "idle", "total": 0, "completed": 0, "failed": 0}
+VOICE_TRANSLATION_LOCK = asyncio.Lock()
 VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流畅自然的AI配音。"
 
 
@@ -126,14 +128,29 @@ class PromptItem(BaseModel):
     enabled: bool = True
 
 
-class WorkflowCreate(BaseModel):
-    book_title: str = Field(min_length=1, max_length=160)
-    author: str = Field(default="", max_length=120)
-    edition: str = Field(default="", max_length=120)
+class WorkflowOptions(BaseModel):
     writing_prompt_ids: list[str] = Field(default_factory=list)
     cover_prompt_ids: list[str] = Field(default_factory=list)
     voice: str = Field(default="zh-CN-XiaoxiaoNeural", min_length=1, max_length=120)
     speech_rate: int = Field(default=0, ge=-50, le=100)
+    background_music_id: str | None = Field(default=None, max_length=40)
+    background_music_volume: int = Field(default=20, ge=0, le=100)
+    background_music_fade_in: float = Field(default=2, ge=0, le=30)
+    background_music_fade_out: float = Field(default=2, ge=0, le=30)
+
+
+class BookCreate(BaseModel):
+    book_title: str = Field(min_length=1, max_length=160)
+    author: str = Field(default="", max_length=120)
+    edition: str = Field(default="", max_length=120)
+
+
+class WorkflowCreate(WorkflowOptions, BookCreate):
+    pass
+
+
+class BatchWorkflowCreate(WorkflowOptions):
+    books: list[BookCreate] = Field(min_length=1, max_length=50)
 
 
 MAX_PROMPT_LENGTH = 100_000
@@ -324,7 +341,7 @@ def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
 
 def speech_ssml(text: str, voice: str, rate: int) -> str:
     safe_rate = max(-50, min(100, int(rate)))
-    return (f'<speak version="1.0" xml:lang="zh-CN"><voice name="{html.escape(voice, quote=True)}">'
+    return (f'<speak version="1.0" xml:lang="{html.escape(voice_locale(voice), quote=True)}"><voice name="{html.escape(voice, quote=True)}">'
             f'<prosody rate="{safe_rate:+d}%">{html.escape(text)}</prosody></voice></speak>')
 
 
@@ -357,6 +374,47 @@ def audio_extension(output_format: str) -> str:
     if output_format.startswith("raw-"): return ".pcm"
     if output_format.startswith("g722-"): return ".g722"
     return ".audio"
+
+
+async def download_background_music(music: dict[str, Any], wid: str) -> Path:
+    suffix = Path(urlparse(music["url"]).path).suffix.lower()
+    if suffix not in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm"):
+        suffix = ".audio"
+    target = MEDIA / f"{wid}-background{suffix}"
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        response = await client.get(music["url"])
+        response.raise_for_status()
+    target.write_bytes(response.content)
+    return target
+
+
+def probe_audio_duration(path: Path) -> float | None:
+    ffprobe = os.getenv("FFPROBE_PATH", "ffprobe")
+    try:
+        result = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+                                capture_output=True, text=True, timeout=30)
+        return float(result.stdout.strip()) if result.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def video_command(ffmpeg: str, cover: Path, narration: Path, output: Path,
+                  music: Path | None = None, volume: int = 20,
+                  fade_in: float = 2, fade_out: float = 2,
+                  duration: float | None = None) -> list[str]:
+    command = [ffmpeg, "-y", "-loop", "1", "-i", str(cover), "-i", str(narration)]
+    if music:
+        command += ["-stream_loop", "-1", "-i", str(music)]
+        music_filters = [f"volume={max(0, min(100, volume)) / 100:.2f}"]
+        if fade_in > 0:
+            music_filters.append(f"afade=t=in:st=0:d={fade_in:g}")
+        if fade_out > 0 and duration:
+            music_filters.append(f"afade=t=out:st={max(0, duration - fade_out):g}:d={min(fade_out, duration):g}")
+        command += ["-filter_complex", f"[2:a]{','.join(music_filters)}[music];[1:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+                    "-map", "0:v", "-map", "[aout]"]
+    command += ["-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "128k",
+                "-pix_fmt", "yuv420p", "-shortest", "-vf", "scale=720:1280,format=yuv420p", str(output)]
+    return command
 
 
 async def process_workflow(wid: str) -> None:
@@ -422,17 +480,22 @@ async def process_workflow(wid: str) -> None:
 
         videos = []
         ffmpeg = os.getenv("FFMPEG_PATH", "ffmpeg")
+        background_music = item.get("background_music")
+        background_path = await download_background_music(background_music, wid) if background_music else None
         for i, audio in enumerate(audio_items):
             if wid in DELETING_WORKFLOWS: return
             cover = MEDIA / Path(covers[i % len(covers)]["url"]).name
             audio_path = MEDIA / Path(audio["url"]).name
             out = MEDIA / f"{wid}-video-{i+1}.mp4"
-            cmd = [ffmpeg, "-y", "-loop", "1", "-i", str(cover), "-i", str(audio_path),
-                   "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "128k",
-                   "-pix_fmt", "yuv420p", "-shortest", "-vf", "scale=720:1280,format=yuv420p", str(out)]
+            duration = await asyncio.to_thread(probe_audio_duration, audio_path) if background_path else None
+            cmd = video_command(ffmpeg, cover, audio_path, out, background_path,
+                                item.get("background_music_volume", 20),
+                                item.get("background_music_fade_in", 2),
+                                item.get("background_music_fade_out", 2), duration)
             result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=180)
             if result.returncode == 0:
-                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{out.name}"})
+                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{out.name}",
+                               "background_music": background_music.get("name") if background_music else ""})
         save_workflow(wid, status="completed", step=6, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save_workflow(wid, status="failed", payload_update={"error": str(exc)[:500]})
@@ -494,26 +557,60 @@ async def voices():
     return {"voices": [item["short_name"] for item in items], "items": items, "demo": demo}
 
 
-def voice_sample_path(voice: str, speech_rate: int = 0) -> Path:
-    cache_key = f"{voice}|{speech_rate}|{VOICE_SAMPLE_TEXT}"
+def voice_locale(voice: str) -> str:
+    parts = voice.split("-")
+    return "-".join(parts[:2]) if len(parts) >= 2 else "zh-CN"
+
+
+def load_voice_translations() -> dict[str, str]:
+    try:
+        return json.loads(VOICE_TRANSLATIONS_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+async def localized_voice_sample_text(locale: str, settings: dict[str, Any]) -> str:
+    locale = locale.strip() or "zh-CN"
+    if locale.lower().startswith(("zh-", "yue-", "wuu-")):
+        return VOICE_SAMPLE_TEXT
+    cache_key = f"{locale}|{VOICE_SAMPLE_TEXT}"
+    async with VOICE_TRANSLATION_LOCK:
+        translations = load_voice_translations()
+        if translations.get(cache_key):
+            return translations[cache_key]
+        translated = await llm([
+            {"role": "system", "content": "你是专业本地化译者。只输出译文，不要引号、说明或额外内容。"},
+            {"role": "user", "content": f"将下面试听文案翻译成 {locale} 地区自然、口语化的表达：\n{VOICE_SAMPLE_TEXT}"},
+        ], settings)
+        if not translated:
+            return VOICE_SAMPLE_TEXT
+        translated = translated.strip().strip('"“”')
+        translations[cache_key] = translated
+        VOICE_TRANSLATIONS_PATH.write_text(json.dumps(translations, ensure_ascii=False, indent=2), encoding="utf-8")
+        return translated
+
+
+def voice_sample_path(voice: str, speech_rate: int = 0, sample_text: str = VOICE_SAMPLE_TEXT) -> Path:
+    cache_key = f"{voice}|{speech_rate}|{sample_text}"
     digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:20]
     return VOICE_SAMPLES / f"{digest}.mp3"
 
 
-async def ensure_voice_sample(voice: str, settings: dict[str, Any]) -> Path:
+async def ensure_voice_sample(voice: str, settings: dict[str, Any], locale: str = "") -> Path:
     speech_rate = settings.get("speech_rate", 0)
-    target = voice_sample_path(voice, speech_rate)
+    sample_text = await localized_voice_sample_text(locale or voice_locale(voice), settings)
+    target = voice_sample_path(voice, speech_rate, sample_text)
     if target.exists() and target.stat().st_size > 0:
         return target
     preview_settings = {**settings, "voice_format": "audio-24khz-96kbitrate-mono-mp3"}
-    if not await speech(VOICE_SAMPLE_TEXT, voice, speech_rate, preview_settings, target):
+    if not await speech(sample_text, voice, speech_rate, preview_settings, target):
         raise HTTPException(503, "请先配置微软语音服务密钥")
     return target
 
 
 @app.get("/api/voices/{voice}/preview")
-async def voice_preview(voice: str):
-    target = await ensure_voice_sample(voice, get_settings())
+async def voice_preview(voice: str, locale: str = ""):
+    target = await ensure_voice_sample(voice, get_settings(), locale)
     return FileResponse(target, media_type="audio/mpeg")
 
 
@@ -523,7 +620,7 @@ async def download_all_voice_samples() -> None:
     VOICE_DOWNLOAD_STATUS.update(status="running", total=len(items), completed=0, failed=0)
     for item in items:
         try:
-            await ensure_voice_sample(item["short_name"], settings)
+            await ensure_voice_sample(item["short_name"], settings, item.get("locale", ""))
             VOICE_DOWNLOAD_STATUS["completed"] += 1
         except Exception:
             VOICE_DOWNLOAD_STATUS["failed"] += 1
@@ -655,12 +752,11 @@ def workflow_delete(wid: str):
     return {"deleted": True, "removed_files": removed_files}
 
 
-@app.post("/api/workflows", status_code=202)
-def workflow_create(value: WorkflowCreate, tasks: BackgroundTasks):
+def create_workflow_record(book: BookCreate, options: WorkflowOptions) -> str:
     wid, now = uuid.uuid4().hex[:12], int(time.time())
     with db() as conn:
-        writing_ids = value.writing_prompt_ids
-        cover_ids = value.cover_prompt_ids
+        writing_ids = options.writing_prompt_ids
+        cover_ids = options.cover_prompt_ids
         writing_rows = conn.execute(
             f"SELECT id,name,text FROM prompt_templates WHERE kind='writing' AND id IN ({','.join('?' for _ in writing_ids)})" if writing_ids else
             "SELECT id,name,text FROM prompt_templates WHERE kind='writing' ORDER BY created_at LIMIT 1", writing_ids
@@ -669,15 +765,39 @@ def workflow_create(value: WorkflowCreate, tasks: BackgroundTasks):
             f"SELECT id,name,text FROM prompt_templates WHERE kind='cover' AND id IN ({','.join('?' for _ in cover_ids)})" if cover_ids else
             "SELECT id,name,text FROM prompt_templates WHERE kind='cover' ORDER BY created_at LIMIT 1", cover_ids
         ).fetchall()
+        music_row = conn.execute("SELECT id,name,url,category FROM background_music WHERE id=?", (options.background_music_id,)).fetchone() if options.background_music_id else None
+        if options.background_music_id and not music_row:
+            raise HTTPException(422, "选择的背景音乐不存在")
     payload = {"writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
                "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in cover_rows],
-               "voices": [value.voice], "speech_rate": value.speech_rate,
+               "voices": [options.voice], "speech_rate": options.speech_rate,
+               "background_music": dict(music_row) if music_row else None,
+               "background_music_volume": options.background_music_volume,
+               "background_music_fade_in": options.background_music_fade_in,
+               "background_music_fade_out": options.background_music_fade_out,
                "description": "", "original_drafts": [], "polished_drafts": [], "covers": [], "audio": [], "videos": []}
     with db() as conn:
         conn.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?,?,?)",
-                     (wid, value.book_title, value.author, value.edition, "queued", 0, 0, now, now, json.dumps(payload, ensure_ascii=False)))
+                     (wid, book.book_title, book.author, book.edition, "queued", 0, 0, now, now, json.dumps(payload, ensure_ascii=False)))
+    return wid
+
+
+@app.post("/api/workflows", status_code=202)
+def workflow_create(value: WorkflowCreate, tasks: BackgroundTasks):
+    book = BookCreate(book_title=value.book_title, author=value.author, edition=value.edition)
+    wid = create_workflow_record(book, value)
     tasks.add_task(process_workflow, wid)
     return {"id": wid, "status": "queued"}
+
+
+@app.post("/api/workflows/batch", status_code=202)
+def workflows_batch_create(value: BatchWorkflowCreate, tasks: BackgroundTasks):
+    workflows = []
+    for book in value.books:
+        wid = create_workflow_record(book, value)
+        workflows.append({"id": wid, "book_title": book.book_title, "status": "queued"})
+        tasks.add_task(process_workflow, wid)
+    return {"count": len(workflows), "workflows": workflows}
 
 
 @app.post("/api/workflows/{wid}/retry", status_code=202)

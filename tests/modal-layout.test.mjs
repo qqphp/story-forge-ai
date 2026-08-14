@@ -44,10 +44,10 @@ test("model and voice configuration are separated", () => {
 });
 
 test("voice center provides global search preview pagination and offline download", () => {
-  assert.match(page, /api\/voices\/\$\{encodeURIComponent\(voice\)\}\/preview/);
+  assert.match(page, /api\/voices\/\$\{encodeURIComponent\(item\.short_name\)\}\/preview\?locale=/);
   assert.match(page, /api\/voices\/download-all/);
   assert.match(page, /搜索音色、语言、地区或性别/);
-  assert.match(page, /试听文案：你好，欢迎收听这款流畅自然的AI配音。/);
+  assert.match(page, /试听会根据音色所属国家或地区，自动翻译并生成对应语言/);
   assert.match(page, /<Pagination page=\{voicePage\}/);
 });
 
@@ -64,7 +64,21 @@ test("background music supports HTTPS entry search and pagination", () => {
   assert.match(css, /\.music-list\{min-height:0\}/);
 });
 
-test("voice preview uses the fluent natural sample copy", () => {
-  assert.match(page, /你好，欢迎收听这款流畅自然的AI配音。/);
-  assert.doesNotMatch(page, /流程、自然的AI配音/);
+test("workflow creation supports background music mixing controls", () => {
+  assert.match(page, /function MusicMixControl/);
+  assert.match(page, /background_music_id:musicId\|\|null/);
+  assert.match(page, /background_music_volume:musicVolume/);
+  assert.match(page, /淡入时间/);
+  assert.match(page, /淡出时间/);
+  assert.match(css, /\.music-mix-grid/);
+});
+
+test("batch creation starts with six rows and shares generation settings", () => {
+  assert.match(page, /Array\.from\(\{length:6\}/);
+  assert.match(page, />批量制作<\/button>/);
+  assert.match(page, /api\/workflows\/batch/);
+  assert.match(page, /第 \{step\} 步 \/ 2/);
+  assert.match(page, /共用配音设置/);
+  assert.match(page, /共用分享稿提示词/);
+  assert.match(page, /共用封面提示词/);
 });

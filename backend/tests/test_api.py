@@ -15,14 +15,15 @@ class StoryForgeApiTests(unittest.TestCase):
         self.db_patch = patch.object(main, "DB_PATH", Path(self.temp.name) / "test.db")
         self.media_patch = patch.object(main, "MEDIA", Path(self.temp.name) / "media")
         self.voice_samples_patch = patch.object(main, "VOICE_SAMPLES", Path(self.temp.name) / "voice_samples")
-        self.db_patch.start(); self.media_patch.start(); self.voice_samples_patch.start()
+        self.voice_translations_patch = patch.object(main, "VOICE_TRANSLATIONS_PATH", Path(self.temp.name) / "voice_translations.json")
+        self.db_patch.start(); self.media_patch.start(); self.voice_samples_patch.start(); self.voice_translations_patch.start()
         main.MEDIA.mkdir(exist_ok=True); main.VOICE_SAMPLES.mkdir(exist_ok=True)
         main.init_db()
         self.client = TestClient(main.app)
 
     def tearDown(self):
         self.client.close()
-        self.db_patch.stop(); self.media_patch.stop(); self.voice_samples_patch.stop(); self.temp.cleanup()
+        self.db_patch.stop(); self.media_patch.stop(); self.voice_samples_patch.stop(); self.voice_translations_patch.stop(); self.temp.cleanup()
 
     def test_health_and_empty_workflows(self):
         self.assertTrue(self.client.get("/api/health").json()["ok"])
@@ -77,11 +78,60 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(workflow["voices"], ["zh-CN-YunxiNeural"])
         self.assertEqual(workflow["speech_rate"], 15)
 
+    def test_workflow_snapshots_background_music_mix(self):
+        music = self.client.post("/api/background-music", json={"name": "夜读", "url": "https://example.com/night.mp3", "category": "安静"}).json()
+        with patch.object(main, "process_workflow"):
+            response = self.client.post("/api/workflows", json={"book_title": "混音测试", "background_music_id": music["id"], "background_music_volume": 35, "background_music_fade_in": 1.5, "background_music_fade_out": 4})
+        workflow = self.client.get(f"/api/workflows/{response.json()['id']}").json()
+        self.assertEqual(workflow["background_music"]["name"], "夜读")
+        self.assertEqual(workflow["background_music_volume"], 35)
+        self.assertEqual(workflow["background_music_fade_in"], 1.5)
+        self.assertEqual(workflow["background_music_fade_out"], 4)
+
+    def test_batch_workflow_creation_uses_shared_configuration(self):
+        prompts = self.client.get("/api/prompts").json()
+        writing = next(p for p in prompts if p["kind"] == "writing")
+        cover = next(p for p in prompts if p["kind"] == "cover")
+        with patch.object(main, "process_workflow") as process:
+            response = self.client.post("/api/workflows/batch", json={"books": [{"book_title": "第一本", "author": "作者甲"}, {"book_title": "第二本", "edition": "纪念版"}], "voice": "en-US-JennyNeural", "speech_rate": 10, "writing_prompt_ids": [writing["id"]], "cover_prompt_ids": [cover["id"]]})
+        self.assertEqual(response.status_code, 202); self.assertEqual(response.json()["count"], 2)
+        self.assertEqual(process.call_count, 2)
+        workflows = self.client.get("/api/workflows").json()
+        self.assertEqual({item["book_title"] for item in workflows}, {"第一本", "第二本"})
+        self.assertTrue(all(item["voices"] == ["en-US-JennyNeural"] and item["speech_rate"] == 10 for item in workflows))
+        self.assertTrue(all(item["writing_prompts"][0]["id"] == writing["id"] and item["cover_prompts"][0]["id"] == cover["id"] for item in workflows))
+
+    def test_video_command_mixes_music_with_volume_and_fades(self):
+        command = main.video_command("ffmpeg", Path("cover.png"), Path("voice.mp3"), Path("out.mp4"), Path("music.mp3"), 35, 1.5, 4, 20)
+        joined = " ".join(command)
+        self.assertIn("-stream_loop -1", joined); self.assertIn("volume=0.35", joined)
+        self.assertIn("afade=t=in:st=0:d=1.5", joined); self.assertIn("afade=t=out:st=16:d=4", joined)
+        self.assertIn("amix=inputs=2:duration=first", joined)
+
     def test_speech_ssml_contains_safe_rate_and_escaped_content(self):
         ssml = main.speech_ssml("读书 < 思考", 'voice"name', 120)
         self.assertIn('rate="+100%"', ssml)
         self.assertIn('name="voice&quot;name"', ssml)
         self.assertIn("读书 &lt; 思考", ssml)
+        self.assertIn('xml:lang="zh-CN"', ssml)
+
+    def test_voice_sample_is_translated_and_cached_by_locale(self):
+        async def fake_llm(_messages, _settings): return "Hello, welcome to this smooth and natural AI voice."
+        settings = {**main.DEFAULT_SETTINGS, "api_key": "test"}
+        with patch.object(main, "llm", side_effect=fake_llm) as mocked:
+            first = asyncio.run(main.localized_voice_sample_text("en-US", settings))
+            second = asyncio.run(main.localized_voice_sample_text("en-US", settings))
+        self.assertEqual(first, second); self.assertEqual(mocked.call_count, 1)
+        self.assertTrue(main.VOICE_TRANSLATIONS_PATH.exists())
+
+    def test_bulk_voice_download_passes_each_voice_locale(self):
+        items = [{"short_name": "en-US-JennyNeural", "locale": "en-US"}, {"short_name": "ja-JP-NanamiNeural", "locale": "ja-JP"}]
+        async def fake_fetch(_settings): return items, False
+        async def fake_ensure(_voice, _settings, _locale): return main.VOICE_SAMPLES / "sample.mp3"
+        with patch.object(main, "fetch_voice_items", side_effect=fake_fetch), patch.object(main, "ensure_voice_sample", side_effect=fake_ensure) as mocked:
+            asyncio.run(main.download_all_voice_samples())
+        self.assertEqual([call.args[2] for call in mocked.call_args_list], ["en-US", "ja-JP"])
+        self.assertEqual(main.VOICE_DOWNLOAD_STATUS["completed"], 2)
 
     def test_audio_extensions_follow_microsoft_formats(self):
         self.assertEqual(main.audio_extension("audio-48khz-192kbitrate-mono-mp3"), ".mp3")
