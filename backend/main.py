@@ -4,7 +4,6 @@ import asyncio
 import base64
 import hashlib
 import html
-import io
 import json
 import math
 import os
@@ -66,7 +65,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS prompt_templates (
               id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('writing','cover')),
               name TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL,
-              updated_at INTEGER NOT NULL
+              updated_at INTEGER NOT NULL, image_sizes TEXT NOT NULL DEFAULT '["2:3"]'
             );
             CREATE INDEX IF NOT EXISTS idx_prompt_templates_kind ON prompt_templates(kind);
             CREATE TABLE IF NOT EXISTS background_music (
@@ -74,17 +73,31 @@ def init_db() -> None:
               category TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_background_music_created_at ON background_music(created_at DESC);
+            CREATE TABLE IF NOT EXISTS request_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, request_type TEXT NOT NULL,
+              request_url TEXT NOT NULL, request_params TEXT NOT NULL, created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_request_logs_type_created_at ON request_logs(request_type, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
             """
         )
+        columns = {column["name"] for column in conn.execute("PRAGMA table_info(prompt_templates)")}
+        if "image_sizes" not in columns:
+            conn.execute("ALTER TABLE prompt_templates ADD COLUMN image_sizes TEXT NOT NULL DEFAULT '[\"2:3\"]'")
         count = conn.execute("SELECT COUNT(*) AS count FROM prompt_templates").fetchone()["count"]
         if count == 0:
             now = int(time.time())
             defaults = [
-                ("writing-short-video", "writing", "短视频口播", "适合 2 分钟短视频口播，有真实阅读感受", now, now),
-                ("writing-insight", "writing", "反常识洞见", "从一个反常识观点切入，避免剧透，结尾给出阅读建议", now, now),
-                ("cover-literary", "cover", "文学质感", "克制的文学感，竖版构图，无文字，为标题留出空间", now, now),
+                ("writing-short-video", "writing", "短视频口播", "适合 2 分钟短视频口播，有真实阅读感受", now, now, '["2:3"]'),
+                ("writing-insight", "writing", "反常识洞见", "从一个反常识观点切入，避免剧透，结尾给出阅读建议", now, now, '["2:3"]'),
+                ("cover-literary", "cover", "文学质感", "克制的文学感，竖版构图，无文字，为标题留出空间", now, now, '["2:3"]'),
             ]
-            conn.executemany("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?)", defaults)
+            conn.executemany("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?,?)", defaults)
+        legacy_size_ratios = {"1024x1024": "1:1", "2048x2048": "1:1", "1600x1200": "4:3", "1536x1024": "3:2", "2048x1152": "16:9", "3840x2160": "16:9", "2538x1080": "2.35:1", "1200x1600": "3:4", "1024x1536": "2:3", "2160x3840": "9:16"}
+        for row in conn.execute("SELECT id,image_sizes FROM prompt_templates").fetchall():
+            sizes = json.loads(row["image_sizes"])
+            if any("x" in size for size in sizes):
+                conn.execute("UPDATE prompt_templates SET image_sizes=? WHERE id=?", (json.dumps(list(dict.fromkeys(legacy_size_ratios.get(size, "2:3") for size in sizes))), row["id"]))
         conn.execute("PRAGMA optimize")
 
 
@@ -154,17 +167,34 @@ class BatchWorkflowCreate(WorkflowOptions):
 
 
 MAX_PROMPT_LENGTH = 100_000
+DEFAULT_IMAGE_SIZES = ["2:3"]
+IMAGE_SIZES = {"1:1", "4:5", "2:3", "3:4", "9:16", "6:7", "1.91:1", "2.35:1", "3:2", "4:3", "16:9"}
 
 
 class PromptTemplateCreate(BaseModel):
     kind: str = Field(pattern="^(writing|cover)$")
     name: str = Field(min_length=1, max_length=80)
     text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
+    image_sizes: list[str] = Field(default_factory=lambda: list(DEFAULT_IMAGE_SIZES), max_length=len(IMAGE_SIZES))
+
+    @field_validator("image_sizes")
+    @classmethod
+    def validate_image_sizes(cls, values: list[str]) -> list[str]:
+        values = list(dict.fromkeys(values))
+        if not values or any(value not in IMAGE_SIZES for value in values):
+            raise ValueError("图片尺寸无效")
+        return values
 
 
 class PromptTemplateUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
+    image_sizes: list[str] = Field(default_factory=lambda: list(DEFAULT_IMAGE_SIZES), max_length=len(IMAGE_SIZES))
+
+    @field_validator("image_sizes")
+    @classmethod
+    def validate_image_sizes(cls, values: list[str]) -> list[str]:
+        return PromptTemplateCreate.validate_image_sizes(values)
 
 
 class SettingsPayload(BaseModel):
@@ -213,6 +243,12 @@ def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def prompt_template_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["image_sizes"] = json.loads(result["image_sizes"])
+    return result
+
+
 def workflow_row(row: sqlite3.Row) -> dict[str, Any]:
     payload = json.loads(row["payload"])
     return {
@@ -221,6 +257,14 @@ def workflow_row(row: sqlite3.Row) -> dict[str, Any]:
         "progress": row["progress"], "created_at": row["created_at"],
         "updated_at": row["updated_at"], **payload,
     }
+
+
+def log_request(request_type: str, request_url: str, request_params: dict[str, Any]) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO request_logs(request_type,request_url,request_params,created_at) VALUES(?,?,?,?)",
+            (request_type, request_url, json.dumps(request_params, ensure_ascii=False), int(time.time())),
+        )
 
 
 def save_workflow(wid: str, *, status: str | None = None, step: int | None = None,
@@ -254,11 +298,13 @@ async def llm(messages: list[dict[str, str]], settings: dict[str, Any]) -> str |
     if not settings.get("api_key"):
         return None
     url = settings["api_base"].rstrip("/") + "/chat/completions"
+    payload = {"model": settings["model"], "messages": messages, "temperature": 0.75}
+    log_request("文稿生成", url, payload)
     async with httpx.AsyncClient(timeout=90) as client:
         response = await client.post(
             url,
             headers={"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
-            json={"model": settings["model"], "messages": messages, "temperature": 0.75},
+            json=payload,
         )
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
@@ -304,27 +350,32 @@ def make_cover(path: Path, title: str, author: str, index: int) -> None:
 
 
 async def generate_cover(path: Path, title: str, author: str, description: str,
-                         prompt: str, index: int, settings: dict[str, Any]) -> bool:
+                         prompt: str, index: int, image_ratio: str, settings: dict[str, Any]) -> tuple[bool, str]:
     """Use an OpenAI-compatible image endpoint when available, with a local fallback."""
     if settings.get("api_key"):
         try:
+            url = settings["api_base"].rstrip("/") + "/images/generations"
+            ratio_prompt = f"{prompt}\n\n图片比例：{image_ratio}"
+            payload = {"model": settings.get("image_model", "gpt-image-2"), "n": 1,
+                       "prompt": f"为《{title}》创作无文字的书籍分享封面。作者：{author}。简介：{description}。视觉要求：{ratio_prompt}"}
+            log_request("封面生成", url, payload)
             async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
                 response = await client.post(
-                    settings["api_base"].rstrip("/") + "/images/generations",
+                    url,
                     headers={"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
-                    json={"model": settings.get("image_model", "gpt-image-2"), "size": "1024x1536", "n": 1,
-                          "prompt": f"为《{title}》创作无文字的竖版书籍分享封面。作者：{author}。简介：{description}。视觉要求：{prompt}"},
+                    json=payload,
                 )
                 response.raise_for_status()
                 data = response.json()["data"][0]
                 raw = base64.b64decode(data["b64_json"]) if data.get("b64_json") else (await client.get(data["url"])).content
-                with Image.open(io.BytesIO(raw)) as generated:
-                    generated.convert("RGB").resize((1080, 1440)).save(path, "PNG")
-                return True
+                path.write_bytes(raw)
+                with Image.open(path) as generated:
+                    return True, f"{generated.width}×{generated.height}"
         except Exception:
             pass
     make_cover(path, title, author, index)
-    return False
+    with Image.open(path) as generated:
+        return False, f"{generated.width}×{generated.height}"
 
 
 def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
@@ -375,9 +426,13 @@ async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], out
     fmt = settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")
     ssml = speech_ssml(text, voice, rate, background_music, background_volume,
                        background_fade_in, background_fade_out)
+    url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+    log_request("配音生成", url, {"voice": voice, "rate": rate, "format": fmt, "text": text,
+                                  "background_music": background_music, "background_volume": background_volume,
+                                  "background_fade_in": background_fade_in, "background_fade_out": background_fade_out})
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
-            f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
+            url,
             headers={"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/ssml+xml",
                      "X-Microsoft-OutputFormat": fmt, "User-Agent": "StoryForge"},
             content=ssml.encode("utf-8"),
@@ -497,14 +552,17 @@ async def process_workflow(wid: str) -> None:
         save_workflow(wid, step=4, progress=65, payload_update={"audio": audio_items})
 
         cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")]
-        if not cover_prompts: cover_prompts = [{"text": "克制、文学感、适合短视频竖版", "enabled": True}]
+        if not cover_prompts: cover_prompts = [{"text": "克制、文学感、适合短视频竖版", "enabled": True, "image_sizes": DEFAULT_IMAGE_SIZES}]
         covers = []
-        for i, prompt in enumerate(cover_prompts):
-            if wid in DELETING_WORKFLOWS: return
-            path = MEDIA / f"{wid}-cover-{i+1}.png"
-            used_real_image = await generate_cover(path, title, author, description, prompt["text"], i, settings)
-            if wid in DELETING_WORKFLOWS: return
-            covers.append({"prompt_name": prompt.get("name", f"封面提示词 {i + 1}"), "prompt": prompt["text"], "url": f"/media/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
+        cover_index = 0
+        for prompt in cover_prompts:
+            for image_ratio in prompt.get("image_sizes") or DEFAULT_IMAGE_SIZES:
+                if wid in DELETING_WORKFLOWS: return
+                cover_index += 1
+                path = MEDIA / f"{wid}-cover-{cover_index}.png"
+                used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
+                if wid in DELETING_WORKFLOWS: return
+                covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
         save_workflow(wid, step=5, progress=82, payload_update={"covers": covers})
 
         videos = []
@@ -531,6 +589,35 @@ async def process_workflow(wid: str) -> None:
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "StoryForge AI"}
+
+
+@app.get("/api/request-logs")
+def request_logs(request_type: str = "", start_time: int | None = None, end_time: int | None = None,
+                 page: int = Query(1, ge=1), page_size: int = Query(30, ge=1, le=100)):
+    conditions, params = [], []
+    if request_type:
+        conditions.append("request_type=?"); params.append(request_type)
+    if start_time is not None:
+        conditions.append("created_at>=?"); params.append(start_time)
+    if end_time is not None:
+        conditions.append("created_at<=?"); params.append(end_time)
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    with db() as conn:
+        total = conn.execute(f"SELECT COUNT(*) AS count FROM request_logs{where}", params).fetchone()["count"]
+        rows = conn.execute(
+            f"SELECT * FROM request_logs{where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
+            (*params, page_size, (page - 1) * page_size),
+        ).fetchall()
+    items = [{**dict(row), "request_params": json.loads(row["request_params"])} for row in rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@app.delete("/api/request-logs")
+def request_logs_clear():
+    with db() as conn:
+        count = conn.execute("SELECT COUNT(*) AS count FROM request_logs").fetchone()["count"]
+        conn.execute("DELETE FROM request_logs")
+    return {"deleted": count}
 
 
 @app.get("/api/settings")
@@ -719,27 +806,27 @@ def prompts_list(kind: str | None = None):
     query += " ORDER BY created_at, name"
     with db() as conn:
         rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    return [prompt_template_row(row) for row in rows]
 
 
 @app.post("/api/prompts", status_code=201)
 def prompt_create(value: PromptTemplateCreate):
     prompt_id, now = uuid.uuid4().hex[:12], int(time.time())
     with db() as conn:
-        conn.execute("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?)",
-                     (prompt_id, value.kind, value.name.strip(), value.text.strip(), now, now))
+        conn.execute("INSERT INTO prompt_templates(id,kind,name,text,created_at,updated_at,image_sizes) VALUES(?,?,?,?,?,?,?)",
+                     (prompt_id, value.kind, value.name.strip(), value.text.strip(), now, now, json.dumps(value.image_sizes)))
         row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
-    return dict(row)
+    return prompt_template_row(row)
 
 
 @app.put("/api/prompts/{prompt_id}")
 def prompt_update(prompt_id: str, value: PromptTemplateUpdate):
     with db() as conn:
-        result = conn.execute("UPDATE prompt_templates SET name=?,text=?,updated_at=? WHERE id=?",
-                              (value.name.strip(), value.text.strip(), int(time.time()), prompt_id))
+        result = conn.execute("UPDATE prompt_templates SET name=?,text=?,image_sizes=?,updated_at=? WHERE id=?",
+                              (value.name.strip(), value.text.strip(), json.dumps(value.image_sizes), int(time.time()), prompt_id))
         if result.rowcount == 0: raise HTTPException(404, "提示词不存在")
         row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
-    return dict(row)
+    return prompt_template_row(row)
 
 
 @app.delete("/api/prompts/{prompt_id}", status_code=204)
@@ -781,18 +868,18 @@ def create_workflow_record(book: BookCreate, options: WorkflowOptions) -> str:
         writing_ids = options.writing_prompt_ids
         cover_ids = options.cover_prompt_ids
         writing_rows = conn.execute(
-            f"SELECT id,name,text FROM prompt_templates WHERE kind='writing' AND id IN ({','.join('?' for _ in writing_ids)})" if writing_ids else
-            "SELECT id,name,text FROM prompt_templates WHERE kind='writing' ORDER BY created_at LIMIT 1", writing_ids
+            f"SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='writing' AND id IN ({','.join('?' for _ in writing_ids)})" if writing_ids else
+            "SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='writing' ORDER BY created_at LIMIT 1", writing_ids
         ).fetchall()
         cover_rows = conn.execute(
-            f"SELECT id,name,text FROM prompt_templates WHERE kind='cover' AND id IN ({','.join('?' for _ in cover_ids)})" if cover_ids else
-            "SELECT id,name,text FROM prompt_templates WHERE kind='cover' ORDER BY created_at LIMIT 1", cover_ids
+            f"SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='cover' AND id IN ({','.join('?' for _ in cover_ids)})" if cover_ids else
+            "SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='cover' ORDER BY created_at LIMIT 1", cover_ids
         ).fetchall()
         music_row = conn.execute("SELECT id,name,url,category FROM background_music WHERE id=?", (options.background_music_id,)).fetchone() if options.background_music_id else None
         if options.background_music_id and not music_row:
             raise HTTPException(422, "选择的背景音乐不存在")
     payload = {"writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
-               "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in cover_rows],
+               "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "image_sizes": json.loads(r["image_sizes"]), "enabled": True} for r in cover_rows],
                "voices": [options.voice], "speech_rate": options.speech_rate,
                "background_music": dict(music_row) if music_row else None,
                "background_music_volume": options.background_music_volume,

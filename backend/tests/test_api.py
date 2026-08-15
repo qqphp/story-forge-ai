@@ -1,9 +1,13 @@
 import tempfile
 import asyncio
+import base64
+import io
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
+
+from PIL import Image
 
 from fastapi.testclient import TestClient
 
@@ -64,6 +68,52 @@ class StoryForgeApiTests(unittest.TestCase):
         updated = self.client.put(f"/api/prompts/{writing.json()['id']}", json={"name": "长分享稿提示词", "text": revised})
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["text"], revised)
+
+    def test_cover_template_image_sizes_are_saved_and_snapshotted(self):
+        sizes = ["1:1", "16:9", "2:3"]
+        cover = self.client.post("/api/prompts", json={
+            "kind": "cover", "name": "多尺寸封面", "text": "无文字、文学感", "image_sizes": sizes,
+        })
+        self.assertEqual(cover.status_code, 201)
+        self.assertEqual(cover.json()["image_sizes"], sizes)
+        with patch.object(main, "process_workflow"):
+            response = self.client.post("/api/workflows", json={"book_title": "尺寸测试", "cover_prompt_ids": [cover.json()["id"]]})
+        workflow = self.client.get(f"/api/workflows/{response.json()['id']}").json()
+        self.assertEqual(workflow["cover_prompts"][0]["image_sizes"], sizes)
+
+    def test_cover_generation_uses_ratio_prompt_without_resolution_or_local_resize(self):
+        image = Image.new("RGB", (73, 41), "navy")
+        raw = io.BytesIO(); image.save(raw, "PNG"); encoded = base64.b64encode(raw.getvalue()).decode()
+        calls = []
+
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"data": [{"b64_json": encoded}]}
+
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def post(self, *args, **kwargs): calls.append(kwargs); return Response()
+
+        target = main.MEDIA / "ratio-cover.png"
+        with patch.object(main.httpx, "AsyncClient", return_value=Client()):
+            generated, resolution = asyncio.run(main.generate_cover(target, "测试书", "作者", "简介", "文学感", 0, "16:9", {"api_base": "https://example.com/v1", "api_key": "key"}))
+        self.assertTrue(generated); self.assertEqual(resolution, "73×41")
+        self.assertEqual(calls[0]["json"]["model"], "gpt-image-2")
+        self.assertNotIn("size", calls[0]["json"])
+        self.assertIn("图片比例：16:9", calls[0]["json"]["prompt"])
+        self.assertEqual(target.read_bytes(), raw.getvalue())
+
+    def test_request_logs_support_filters_details_and_clear(self):
+        main.log_request("文稿生成", "https://example.com/chat", {"model": "test", "messages": [{"content": "文稿"}]})
+        main.log_request("封面生成", "https://example.com/images", {"prompt": "图片比例：1:1"})
+        listing = self.client.get("/api/request-logs", params={"request_type": "封面生成"})
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["total"], 1)
+        self.assertEqual(listing.json()["items"][0]["request_params"]["prompt"], "图片比例：1:1")
+        cleared = self.client.delete("/api/request-logs")
+        self.assertEqual(cleared.json()["deleted"], 2)
+        self.assertEqual(self.client.get("/api/request-logs").json()["total"], 0)
 
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()

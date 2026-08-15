@@ -4,6 +4,7 @@ import test from "node:test";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+const backend = readFileSync(new URL("../backend/main.py", import.meta.url), "utf8");
 
 test("configuration dialogs remain scrollable at high display scaling", () => {
   assert.match(css, /\.config-modal\{[^}]*overflow-y:auto/);
@@ -74,6 +75,30 @@ test("workflow creation supports background music mixing controls", () => {
   assert.match(page, /淡入时间/);
   assert.match(page, /淡出时间/);
   assert.match(css, /\.music-mix-grid/);
+});
+
+test("cover ratios are selected as prompts and generated images expose their metadata", () => {
+  assert.doesNotMatch(backend, /gpt-image-2-codex/);
+  assert.match(backend, /settings\.get\("image_model", "gpt-image-2"\)/);
+  assert.match(backend, /图片比例：\{image_ratio\}/);
+  assert.match(page, /1\.91:1/);
+  assert.match(page, /2\.35:1/);
+  assert.match(page, /图片比例/);
+  assert.match(page, /CoverGallery/);
+  assert.match(page, /共生成 <b>\{covers\.length\}<\/b> 张图片/);
+  assert.match(css, /\.cover-gallery/);
+});
+
+test("configuration and request logs use standalone sidebar pages", () => {
+  assert.match(page, /className="side-nav"/);
+  assert.match(page, />提示词库<\/button>/);
+  assert.match(page, />模型配置<\/button>/);
+  assert.match(page, />语音设置<\/button>/);
+  assert.match(page, />请求日志<\/button>/);
+  assert.match(page, /<RequestLogsPage/);
+  assert.match(page, /type="datetime-local"/);
+  assert.match(page, /method:"DELETE"/);
+  assert.match(css, /\.config-page \.modal-backdrop\{position:static/);
 });
 
 test("batch creation starts with six rows and shares generation settings", () => {

@@ -3,11 +3,13 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-type PromptTemplate = { id: string; kind: "writing" | "cover"; name: string; text: string };
-type Asset = { url: string; voice?: string; speech_rate?: number; prompt?: string; prompt_name?: string; draft_id?: string };
+type PromptTemplate = { id: string; kind: "writing" | "cover"; name: string; text: string; image_sizes?: string[] };
+type Asset = { url: string; voice?: string; speech_rate?: number; prompt?: string; prompt_name?: string; image_ratio?: string; resolution?: string; draft_id?: string };
 type Draft = { id: string; prompt: string; text: string };
 type VoiceItem = { short_name:string; locale:string; local_name:string; display_name:string; gender:string };
 type BackgroundMusic = { id:string; name:string; url:string; category:string; created_at:number };
+type RequestLog = { id:number; request_type:string; request_url:string; request_params:Record<string,unknown>; created_at:number };
+type WorkspacePage = "workspace" | "prompts" | "models" | "voice" | "logs";
 type AppSettings = { api_base:string; model:string; image_model:string; api_key:string; azure_speech_key:string; azure_speech_region:string; voice_format:string; voices:string[]; speech_rate:number };
 type Workflow = {
   id: string; book_title: string; author: string; edition: string; status: string;
@@ -30,9 +32,7 @@ export default function Home() {
   const [selected, setSelected] = useState<Workflow | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showBatch, setShowBatch] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showVoiceSettings, setShowVoiceSettings] = useState(false);
-  const [showPrompts, setShowPrompts] = useState(false);
+  const [activePage,setActivePage]=useState<WorkspacePage>("workspace");
   const [toast, setToast] = useState("");
   const [connected, setConnected] = useState(false);
   const [query, setQuery] = useState("");
@@ -89,19 +89,26 @@ export default function Home() {
 
   return (
     <main className="app-shell">
+      <aside className="side-nav">
+        <button className="brand" onClick={()=>{setActivePage("workspace");setSelected(null)}} aria-label="返回工作台"><span className="brand-mark">砚</span><span><b>砚界</b><small>STORYFORGE AI</small></span></button>
+        <nav aria-label="主导航">
+          <button className={activePage==="workspace"?"active":""} onClick={()=>setActivePage("workspace")}><span>册</span>创作工作台</button>
+          <button className={activePage==="prompts"?"active":""} onClick={()=>setActivePage("prompts")}><span>✦</span>提示词库</button>
+          <button className={activePage==="models"?"active":""} onClick={()=>setActivePage("models")}><span>AI</span>模型配置</button>
+          <button className={activePage==="voice"?"active":""} onClick={()=>setActivePage("voice")}><span>声</span>语音设置</button>
+          <button className={activePage==="logs"?"active":""} onClick={()=>setActivePage("logs")}><span>录</span>请求日志</button>
+        </nav>
+        <span className={`side-connection ${connected?"online":""}`}><i/>{connected?"本地服务已连接":"本地服务未连接"}</span>
+      </aside>
+      <section className="workspace-main">
       <header className="topbar">
-        <button className="brand" onClick={() => setSelected(null)} aria-label="返回工作台">
-          <span className="brand-mark">砚</span><span><b>砚界</b><small>STORYFORGE AI</small></span>
-        </button>
+        <div className="page-heading"><b>{{workspace:"创作工作台",prompts:"提示词库",models:"模型配置",voice:"语音设置",logs:"请求日志"}[activePage]}</b><small>本地创作与生成配置中心</small></div>
         <div className="top-actions">
           <span className={`connection ${connected ? "online" : ""}`}><i />{connected ? "服务已连接" : "演示模式"}</span>
-          <button className="header-action" onClick={() => setShowPrompts(true)}><span className="action-icon">✦</span>提示词库</button>
-          <button className="header-action" onClick={() => setShowSettings(true)}><span className="action-icon">AI</span>模型配置</button>
-          <button className="header-action" onClick={() => setShowVoiceSettings(true)}><span className="action-icon">声</span>语音设置</button>
         </div>
       </header>
 
-      <section className="content">
+      {activePage==="workspace"&&<section className="content">
         <div className="hero-row">
           <div><p className="eyebrow">创作工作台</p><h1>把一本书，讲给更多人听。</h1><p className="subtitle">从书籍信息到文案、配音、封面与视频，一次输入，自动完成。</p></div>
           <div className="hero-actions"><button className="primary" onClick={() => setShowCreate(true)}><span>＋</span> 开始新制作</button><button className="primary batch-launch" onClick={()=>setShowBatch(true)}><span aria-hidden="true">▦</span> 批量制作</button></div>
@@ -121,17 +128,28 @@ export default function Home() {
         </div>
 
         {shown.length ? <div className="task-grid">{shown.map(task => <TaskCard key={task.id} task={task} onOpen={() => setSelected(task)} />)}</div> : <div className="empty"><span>册</span><h3>还没有作品</h3><p>从一本打动你的书开始。</p><button className="primary" onClick={() => setShowCreate(true)}>开始新制作</button></div>}
-      </section>
+      </section>}
+      {activePage==="prompts"&&<section className="config-page"><PromptLibraryDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>setToast("提示词库已更新")}/></section>}
+      {activePage==="models"&&<section className="config-page"><SettingsDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>{setToast("配置已保存");loadTasks()}}/></section>}
+      {activePage==="voice"&&<section className="config-page"><VoiceSettingsDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>setToast("语音配置已保存")}/></section>}
+      {activePage==="logs"&&<RequestLogsPage connected={connected} onToast={setToast}/>}
 
       {showCreate && <CreateDialog connected={connected} onClose={() => setShowCreate(false)} onSubmit={createWorkflow} />}
       {showBatch && <BatchCreateDialog connected={connected} onClose={()=>setShowBatch(false)} onSubmit={createBatch}/>}
-      {showPrompts && <PromptLibraryDialog connected={connected} onClose={() => setShowPrompts(false)} onSaved={() => setToast("提示词库已更新")} />}
-      {showSettings && <SettingsDialog connected={connected} onClose={() => setShowSettings(false)} onSaved={() => { setToast("配置已保存"); setShowSettings(false); loadTasks(); }} />}
-      {showVoiceSettings && <VoiceSettingsDialog connected={connected} onClose={() => setShowVoiceSettings(false)} onSaved={() => { setToast("语音配置已保存"); setShowVoiceSettings(false); }} />}
       {selected && <DetailPanel task={selected} onClose={() => setSelected(null)} onRetry={async () => { await fetch(`${API}/api/workflows/${selected.id}/retry`, {method:"POST"}); setToast("已重新开始制作"); }} onDelete={async()=>{const res=await fetch(`${API}/api/workflows/${selected.id}`,{method:"DELETE"});if(!res.ok)throw new Error("删除失败");setSelected(null);setToast("作品及相关产物已删除");await loadTasks();}} />}
       {toast && <div className="toast" role="status" onAnimationEnd={() => setToast("")}>{toast}</div>}
+      </section>
     </main>
   );
+}
+
+function RequestLogsPage({connected,onToast}:{connected:boolean;onToast:(message:string)=>void}) {
+  const [items,setItems]=useState<RequestLog[]>([]); const [total,setTotal]=useState(0); const [requestType,setRequestType]=useState("");
+  const [startTime,setStartTime]=useState(""); const [endTime,setEndTime]=useState(""); const [expanded,setExpanded]=useState<number|null>(null); const [loading,setLoading]=useState(false);
+  const load=useCallback(async()=>{if(!connected){setItems([]);setTotal(0);return;}setLoading(true);try{const params=new URLSearchParams({page_size:"100"});if(requestType)params.set("request_type",requestType);if(startTime)params.set("start_time",String(Math.floor(new Date(startTime).getTime()/1000)));if(endTime)params.set("end_time",String(Math.floor(new Date(endTime).getTime()/1000)));const response=await fetch(`${API}/api/request-logs?${params}`);if(!response.ok)throw new Error();const data=await response.json();setItems(data.items);setTotal(data.total)}finally{setLoading(false)}},[connected,requestType,startTime,endTime]);
+  useEffect(()=>{const timer=window.setTimeout(()=>{void load()},0);return()=>window.clearTimeout(timer)},[load]);
+  const clear=async()=>{if(!window.confirm("确定清空全部请求日志吗？"))return;const response=await fetch(`${API}/api/request-logs`,{method:"DELETE"});if(!response.ok)return;setItems([]);setTotal(0);setExpanded(null);onToast("请求日志已清空")};
+  return <section className="content config-content request-logs-page"><div className="page-section-head"><div><p className="eyebrow">REQUEST HISTORY</p><h1>请求日志</h1><p>查看文稿、封面和配音服务的本地请求记录。</p></div><button className="danger-outline" disabled={!connected||!total} onClick={clear}>清空日志</button></div><div className="log-filters"><label>请求类型<select value={requestType} onChange={event=>setRequestType(event.target.value)}><option value="">全部类型</option><option value="文稿生成">文稿生成</option><option value="封面生成">封面生成</option><option value="配音生成">配音生成</option></select></label><label>开始时间<input type="datetime-local" value={startTime} onChange={event=>setStartTime(event.target.value)}/></label><label>结束时间<input type="datetime-local" value={endTime} onChange={event=>setEndTime(event.target.value)}/></label><button className="secondary" onClick={()=>{setRequestType("");setStartTime("");setEndTime("")}}>重置筛选</button></div><div className="log-list-head"><b>请求记录</b><span>{loading?"加载中…":`共 ${total} 条`}</span></div><div className="request-log-list">{items.map(item=><article key={item.id} className={expanded===item.id?"expanded":""}><button className="log-summary" onClick={()=>setExpanded(expanded===item.id?null:item.id)}><span className={`log-type ${item.request_type}`}>{item.request_type}</span><code>{item.request_url}</code><time>{new Date(item.created_at*1000).toLocaleString("zh-CN")}</time><i>{expanded===item.id?"收起":"参数"}</i></button>{expanded===item.id&&<div className="log-params"><b>请求参数</b><pre>{JSON.stringify(item.request_params,null,2)}</pre></div>}</article>)}{!items.length&&!loading&&<div className="panel-empty">暂无符合条件的请求日志</div>}</div></section>;
 }
 
 function TaskCard({ task, onOpen }: { task: Workflow; onOpen: () => void }) {
@@ -193,19 +211,36 @@ function TemplatePicker({title,hint,kind,templates,selected,setSelected}:{title:
   return <section className="prompt-editor"><div><h3>{title}</h3><p>{hint}</p></div><div className="template-picker title-only">{items.map(item=><label key={item.id} className={selected.includes(item.id)?"picked":""}><input type="checkbox" checked={selected.includes(item.id)} onChange={e=>setSelected(e.target.checked?[...selected,item.id]:selected.filter(id=>id!==item.id))}/><b>{item.name}</b><span className="check-mark">✓</span></label>)}</div>{!items.length&&<p className="empty-hint">请先到提示词库添加配置</p>}</section>;
 }
 
+const coverSizeGroups = [
+  {label:"正方形", options:[["1:1","1:1"]]},
+  {label:"横版", options:[["1.91:1","1.91:1"],["2.35:1","2.35:1"],["3:2","3:2"],["4:3","4:3"],["16:9","16:9"]]},
+  {label:"竖版", options:[["4:5","4:5"],["2:3","2:3"],["3:4","3:4"],["9:16","9:16"],["6:7","6:7"]]},
+] as const;
+
+function ImageSizePicker({value,onChange}:{value:string[];onChange:(value:string[])=>void}) {
+  return <fieldset className="image-size-picker"><legend>图片尺寸</legend><p>可多选；每个比例将单独生成一张封面图片</p><div>{coverSizeGroups.map(group=><section key={group.label}><b>{group.label}</b><div>{group.options.map(([size,label])=><label key={size}><input type="checkbox" checked={value.includes(size)} onChange={event=>onChange(event.target.checked?[...value,size]:value.filter(item=>item!==size))}/><span>{label}</span></label>)}</div></section>)}</div><small className="image-size-note">由于中转站的 gpt-image-2 接口实际调用 gpt-image-2-codex，同一条提示词需按比例分别调用一次接口才能生成一张图片；该接口不支持设置分辨率参数，仅会在提示词中追加图片比例。</small></fieldset>;
+}
+
 function PromptLibraryDialog({connected,onClose,onSaved}:{connected:boolean;onClose:()=>void;onSaved:()=>void}) {
   const [kind,setKind]=useState<"writing"|"cover">("writing");
-  const [items,setItems]=useState<PromptTemplate[]>([]); const [name,setName]=useState(""); const [text,setText]=useState("");
+  const [items,setItems]=useState<PromptTemplate[]>([]); const [name,setName]=useState(""); const [text,setText]=useState(""); const [imageSizes,setImageSizes]=useState<string[]>(["2:3"]);
   const [editingId,setEditingId]=useState<string|null>(null); const [saving,setSaving]=useState(false);
   const load=()=>connected&&fetch(`${API}/api/prompts`).then(r=>r.json()).then(setItems).catch(()=>{});
   useEffect(()=>{if(connected) void fetch(`${API}/api/prompts`).then(r=>r.json()).then(setItems).catch(()=>{});},[connected]);
-  const clearEditor=()=>{setName("");setText("");setEditingId(null)};
-  const saveTemplate=async()=>{if(!name.trim()||!text.trim())return;setSaving(true);try{const url=editingId?`${API}/api/prompts/${editingId}`:`${API}/api/prompts`;const res=await fetch(url,{method:editingId?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(editingId?{name,text}:{kind,name,text})});if(res.ok){clearEditor();load();onSaved();}}finally{setSaving(false)}};
-  const edit=(item:PromptTemplate)=>{setEditingId(item.id);setName(item.name);setText(item.text)};
+  const clearEditor=()=>{setName("");setText("");setImageSizes(["2:3"]);setEditingId(null)};
+  const saveTemplate=async()=>{if(!name.trim()||!text.trim()||(kind==="cover"&&!imageSizes.length))return;setSaving(true);try{const url=editingId?`${API}/api/prompts/${editingId}`:`${API}/api/prompts`;const payload={name,text,image_sizes:imageSizes};const res=await fetch(url,{method:editingId?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(editingId?payload:{kind,...payload})});if(res.ok){clearEditor();load();onSaved();}}finally{setSaving(false)}};
+  const edit=(item:PromptTemplate)=>{setEditingId(item.id);setName(item.name);setText(item.text);setImageSizes(item.image_sizes||["2:3"])};
   const remove=async(id:string)=>{await fetch(`${API}/api/prompts/${id}`,{method:"DELETE"});load();onSaved();};
   const visible=items.filter(x=>x.kind===kind);
   const switchKind=(next:"writing"|"cover")=>{setKind(next);clearEditor()};
-  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal config-modal prompt-library"><div className="modal-head"><div><p className="eyebrow">全局配置</p><h2>提示词库</h2><p className="modal-subtitle">集中维护创作模板，新建工作流时直接勾选使用</p></div><button className="close" onClick={onClose}>×</button></div><div className="library-tabs"><button className={kind==="writing"?"active":""} onClick={()=>switchKind("writing")}>分享稿提示词 <em>{items.filter(x=>x.kind==="writing").length}</em></button><button className={kind==="cover"?"active":""} onClick={()=>switchKind("cover")}>封面提示词 <em>{items.filter(x=>x.kind==="cover").length}</em></button></div><div className="library-layout"><section className="template-list"><div className="list-caption"><span>已添加模板</span><small>{visible.length} 个</small></div>{visible.map((item,index)=><article className={editingId===item.id?"editing":""} key={item.id}><span className="template-number">{String(index+1).padStart(2,"0")}</span><div className="template-copy"><b>{item.name}</b><p>{item.text}</p></div><div className="template-actions"><button onClick={()=>edit(item)}>编辑</button><button className="danger-link" onClick={()=>remove(item.id)}>删除</button></div></article>)}{!visible.length&&<div className="empty-template"><span>◇</span><p>还没有模板，从右侧添加第一个</p></div>}</section><section className="template-composer"><div className="composer-title"><span>{editingId?"编":"＋"}</span><div><h3>{editingId?"编辑模板":"添加新模板"}</h3><p>{kind==="writing"?"定义文案的结构、语气与长度":"定义封面的风格、构图与色彩"}</p></div></div><label>模板名称<input value={name} onChange={e=>setName(e.target.value)} placeholder={kind==="writing"?"例如：知识型口播":"例如：复古油画"}/></label><label>提示词内容<textarea value={text} onChange={e=>setText(e.target.value)} placeholder={kind==="writing"?"描述分享稿的语气、结构和长度要求":"描述封面的风格、构图和色彩要求"}/></label><div className="composer-actions">{editingId&&<button className="secondary" onClick={clearEditor}>取消编辑</button>}<button className="primary action-button" disabled={!connected||!name.trim()||!text.trim()||saving} onClick={saveTemplate}><span aria-hidden="true">{editingId?"✓":"＋"}</span>{saving?"保存中…":editingId?"保存修改":"添加模板"}</button></div></section></div></div></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal config-modal prompt-library"><div className="modal-head"><div><p className="eyebrow">全局配置</p><h2>提示词库</h2><p className="modal-subtitle">集中维护创作模板，新建工作流时直接勾选使用</p></div><button className="close" onClick={onClose}>×</button></div><div className="library-tabs"><button className={kind==="writing"?"active":""} onClick={()=>switchKind("writing")}>分享稿提示词 <em>{items.filter(x=>x.kind==="writing").length}</em></button><button className={kind==="cover"?"active":""} onClick={()=>switchKind("cover")}>封面提示词 <em>{items.filter(x=>x.kind==="cover").length}</em></button></div><div className="library-layout"><section className="template-list"><div className="list-caption"><span>已添加模板</span><small>{visible.length} 个</small></div>{visible.map((item,index)=><article className={editingId===item.id?"editing":""} key={item.id}><span className="template-number">{String(index+1).padStart(2,"0")}</span><div className="template-copy"><b>{item.name}</b><p>{item.text}</p></div><div className="template-actions"><button onClick={()=>edit(item)}>编辑</button><button className="danger-link" onClick={()=>remove(item.id)}>删除</button></div></article>)}{!visible.length&&<div className="empty-template"><span>◇</span><p>还没有模板，从右侧添加第一个</p></div>}</section><section className="template-composer"><div className="composer-title"><span>{editingId?"编":"＋"}</span><div><h3>{editingId?"编辑模板":"添加新模板"}</h3><p>{kind==="writing"?"定义文案的结构、语气与长度":"定义封面的风格、构图与色彩"}</p></div></div><label>模板名称<input value={name} onChange={e=>setName(e.target.value)} placeholder={kind==="writing"?"例如：知识型口播":"例如：复古油画"}/></label><label>提示词内容<textarea value={text} onChange={e=>setText(e.target.value)} placeholder={kind==="writing"?"描述分享稿的语气、结构和长度要求":"描述封面的风格、构图和色彩要求"}/></label>{kind==="cover"&&<ImageSizePicker value={imageSizes} onChange={setImageSizes}/>}<div className="composer-actions">{editingId&&<button className="secondary" onClick={clearEditor}>取消编辑</button>}<button className="primary action-button" disabled={!connected||!name.trim()||!text.trim()||(kind==="cover"&&!imageSizes.length)||saving} onClick={saveTemplate}><span aria-hidden="true">{editingId?"✓":"＋"}</span>{saving?"保存中…":editingId?"保存修改":"添加模板"}</button></div></section></div></div></div>;
+}
+
+function CoverGallery({covers,bookTitle,coverPrompts}:{covers:Asset[];bookTitle:string;coverPrompts?:PromptTemplate[]}) {
+  const [active,setActive]=useState(0); const selected=covers[Math.min(active,covers.length-1)];
+  if(!selected)return <EmptyMedia text="封面尚未生成"/>;
+  const promptName=selected.prompt_name||coverPrompts?.find(prompt=>prompt.text===selected.prompt)?.name||`封面提示词 ${active+1}`;
+  return <section className="cover-gallery"><figure className="cover-stage"><img src={`${API}${selected.url}`} alt={`${bookTitle}封面 ${active+1}`}/><figcaption><b>{promptName}</b><span>比例 {selected.image_ratio||"未记录"} · 分辨率 {selected.resolution||"未记录"}</span></figcaption></figure><div className="cover-thumbnails">{covers.map((cover,index)=><button type="button" key={cover.url} className={index===active?"active":""} onClick={()=>setActive(index)} aria-label={`切换到第 ${index+1} 张封面`}><img src={`${API}${cover.url}`} alt=""/><span>第 {index+1} 张</span><small>{cover.image_ratio||"未记录"} · {cover.resolution||"未记录"}</small></button>)}</div><p className="cover-gallery-summary">共生成 <b>{covers.length}</b> 张图片 · 当前第 {active+1} 张</p></section>;
 }
 
 function DetailPanel({task,onClose,onRetry,onDelete}:{task:Workflow;onClose:()=>void;onRetry:()=>void;onDelete:()=>Promise<void>}) {
@@ -219,7 +254,7 @@ function DetailPanel({task,onClose,onRetry,onDelete}:{task:Workflow;onClose:()=>
       {task.status!=="completed"&&<div className="pipeline"><div className="pipeline-head"><span>{task.status==="failed"?"制作遇到问题":`正在${stages[Math.max(0,task.step-1)]||"准备"}`}</span><b>{task.progress}%</b></div><div className="progress"><i style={{width:`${task.progress}%`}}/></div><div className="steps">{stages.map((s,i)=><span className={i<task.step?"done":i===task.step?"now":""} key={s}>{i<task.step?"✓":i+1}<small>{s}</small></span>)}</div>{task.error&&<p className="error">{task.error} <button onClick={onRetry}>重试</button></p>}</div>}
       {tab==="overview"&&<section className="result-section"><h3>书籍简介</h3><div className="paper">{task.description||"简介将在书籍解析完成后出现。"}</div><h3>产出清单</h3><div className="asset-summary"><span><b>{task.polished_drafts?.length||0}</b> 篇分享稿</span><span><b>{task.audio?.length||0}</b> 份配音</span><span><b>{task.covers?.length||0}</b> 张封面</span><span><b>{task.videos?.length||0}</b> 条视频</span></div></section>}
       {tab==="drafts"&&<section className="result-section"><div className="section-inline"><h3>分享稿对比</h3>{(task.polished_drafts?.length||0)>1&&<select value={compare} onChange={e=>setCompare(+e.target.value)}>{task.polished_drafts?.map((d,i)=><option key={d.id} value={i}>版本 {i+1}</option>)}</select>}</div><div className="compare"><article><label>原始稿</label><p>{task.original_drafts?.[compare]?.text||"尚未生成"}</p></article><article className="polished"><label>自然化优化稿</label><p>{task.polished_drafts?.[compare]?.text||"尚未生成"}</p></article></div></section>}
-      {tab==="covers"&&<section className="media-grid">{task.covers?.length?<>{task.covers.map((a,i)=>{const promptName=a.prompt_name||task.cover_prompts?.find(prompt=>prompt.text===a.prompt)?.name||`封面提示词 ${i+1}`;return <figure key={i}><img src={`${API}${a.url}`} alt={`${task.book_title}封面 ${i+1}`}/><figcaption className="cover-prompt"><b>{promptName}</b><p title={a.prompt}>{a.prompt||"未记录提示词内容"}</p></figcaption></figure>})}</>:<EmptyMedia text="封面尚未生成"/>}</section>}
+      {tab==="covers"&&<CoverGallery covers={task.covers||[]} bookTitle={task.book_title} coverPrompts={task.cover_prompts}/>}
       {tab==="audio"&&<section className="audio-list">{task.audio?.length?task.audio.map((a,i)=><article key={i}><span>声</span><div><b>{a.voice}</b><small>分享稿 {i+1} · 语速 {a.speech_rate===0||a.speech_rate===undefined?"正常":`${a.speech_rate>0?"+":""}${a.speech_rate}%`}</small></div><audio controls preload="none" src={`${API}${a.url}`}/></article>):<EmptyMedia text="配音尚未生成"/>}</section>}
       {tab==="videos"&&<section className="video-grid">{task.videos?.length?task.videos.map((a,i)=><figure key={i}><video controls preload="metadata" src={`${API}${a.url}`}/><figcaption>{a.voice} · 分享稿 {i+1}</figcaption></figure>):<EmptyMedia text="视频尚未生成"/>}</section>}
     </div>{confirmDelete&&<div className="confirm-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&!deleting&&setConfirmDelete(false)}><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><span className="danger-mark">删</span><h3 id="delete-title">确定删除《{task.book_title}》？</h3><p>该作品的简介、分享稿、封面、配音和视频都会被永久删除，此操作无法撤销。</p>{deleteError&&<small>{deleteError}</small>}<div><button className="secondary" disabled={deleting} onClick={()=>setConfirmDelete(false)}>取消</button><button className="danger-button" disabled={deleting} onClick={remove}>{deleting?"正在删除…":"确认永久删除"}</button></div></section></div>}
