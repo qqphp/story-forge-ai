@@ -14,7 +14,7 @@ type AppSettings = { api_base:string; model:string; image_model:string; api_key:
 type Workflow = {
   id: string; book_title: string; author: string; edition: string; status: string;
   step: number; progress: number; created_at: number; description?: string; error?: string;
-  original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; videos?: Asset[]; cover_prompts?: PromptTemplate[];
+  output_dir?: string; original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; videos?: Asset[]; cover_prompts?: PromptTemplate[];
 };
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -37,6 +37,8 @@ export default function Home() {
   const [connected, setConnected] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [workView,setWorkView]=useState<"cards"|"list">("cards");
+  const [checkedTaskIds,setCheckedTaskIds]=useState<string[]>([]);
 
   async function loadTasks() {
     try {
@@ -45,6 +47,7 @@ export default function Home() {
       const data = await res.json();
       setConnected(true);
       setTasks(data.length ? data : []);
+      setCheckedTaskIds(ids=>ids.filter(id=>data.some((task:Workflow)=>task.id===id)));
       if (selected) {
         const fresh = data.find((t: Workflow) => t.id === selected.id);
         if (fresh) setSelected(fresh);
@@ -65,6 +68,16 @@ export default function Home() {
   }), [tasks, query, filter]);
   const running = tasks.filter(t => t.status === "running" || t.status === "queued").length;
   const completed = tasks.filter(t => t.status === "completed").length;
+  const allShownChecked=shown.length>0&&shown.every(task=>checkedTaskIds.includes(task.id));
+
+  async function deleteCheckedTasks() {
+    if(!checkedTaskIds.length||!window.confirm(`确定删除选中的 ${checkedTaskIds.length} 个作品及其全部产物吗？`))return;
+    const ids=[...checkedTaskIds];
+    if(!connected){setTasks(items=>items.filter(task=>!ids.includes(task.id)));setCheckedTaskIds([]);setToast(`已删除 ${ids.length} 个作品`);return;}
+    const results=await Promise.all(ids.map(id=>fetch(`${API}/api/workflows/${id}`,{method:"DELETE"})));
+    if(results.some(response=>!response.ok)){setToast("部分作品删除失败，请重试");await loadTasks();return;}
+    setCheckedTaskIds([]);setToast(`已删除 ${ids.length} 个作品及相关产物`);await loadTasks();
+  }
 
   async function createWorkflow(payload: Record<string, unknown>) {
     if (!connected) {
@@ -124,10 +137,11 @@ export default function Home() {
           <div><h2>我的作品</h2><p>每一本书，都是一段正在发生的故事</p></div>
           <div className="tools"><label className="search"><span>⌕</span><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索书名或作者" /></label>
             <select value={filter} onChange={e => setFilter(e.target.value)} aria-label="筛选任务"><option value="all">全部状态</option><option value="running">制作中</option><option value="completed">已完成</option><option value="failed">失败</option></select>
+            <div className="view-switch" aria-label="作品显示方式"><button className={workView==="cards"?"active":""} onClick={()=>setWorkView("cards")} title="卡片视图">▦</button><button className={workView==="list"?"active":""} onClick={()=>setWorkView("list")} title="列表视图">☷</button></div>
           </div>
         </div>
 
-        {shown.length ? <div className="task-grid">{shown.map(task => <TaskCard key={task.id} task={task} onOpen={() => setSelected(task)} />)}</div> : <div className="empty"><span>册</span><h3>还没有作品</h3><p>从一本打动你的书开始。</p><button className="primary" onClick={() => setShowCreate(true)}>开始新制作</button></div>}
+        {shown.length ? workView==="cards"?<div className="task-grid">{shown.map(task => <TaskCard key={task.id} task={task} onOpen={() => setSelected(task)} />)}</div>:<TaskList tasks={shown} checkedIds={checkedTaskIds} allChecked={allShownChecked} onToggleAll={()=>setCheckedTaskIds(allShownChecked?checkedTaskIds.filter(id=>!shown.some(task=>task.id===id)):[...new Set([...checkedTaskIds,...shown.map(task=>task.id)])])} onToggle={id=>setCheckedTaskIds(ids=>ids.includes(id)?ids.filter(value=>value!==id):[...ids,id])} onOpen={setSelected} onDelete={deleteCheckedTasks}/>:<div className="empty"><span>册</span><h3>还没有作品</h3><p>从一本打动你的书开始。</p><button className="primary" onClick={() => setShowCreate(true)}>开始新制作</button></div>}
       </section>}
       {activePage==="prompts"&&<section className="config-page"><PromptLibraryDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>setToast("提示词库已更新")}/></section>}
       {activePage==="models"&&<section className="config-page"><SettingsDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>{setToast("配置已保存");loadTasks()}}/></section>}
@@ -161,6 +175,10 @@ function TaskCard({ task, onOpen }: { task: Workflow; onOpen: () => void }) {
       <div className="task-foot"><span>{date}</span><b>查看作品 →</b></div>
     </div>
   </button>;
+}
+
+function TaskList({tasks,checkedIds,allChecked,onToggleAll,onToggle,onOpen,onDelete}:{tasks:Workflow[];checkedIds:string[];allChecked:boolean;onToggleAll:()=>void;onToggle:(id:string)=>void;onOpen:(task:Workflow)=>void;onDelete:()=>void}) {
+  return <section className="task-list-panel"><div className="task-list-actions"><label><input type="checkbox" checked={allChecked} onChange={onToggleAll}/>全选当前结果</label><span>已选择 {checkedIds.length} 项</span><button className="danger-outline" disabled={!checkedIds.length} onClick={onDelete}>删除所选</button></div><div className="task-list-scroll"><table className="task-list"><thead><tr><th aria-label="选择"/><th>作品</th><th>状态</th><th>进度</th><th>创建时间</th><th/></tr></thead><tbody>{tasks.map(task=><tr key={task.id}><td><input type="checkbox" checked={checkedIds.includes(task.id)} onChange={()=>onToggle(task.id)} aria-label={`选择《${task.book_title}》`}/></td><td><button className="task-list-title" onClick={()=>onOpen(task)}><b>{task.book_title}</b><small>{task.author||"未填写作者"}</small></button></td><td><Status value={task.status}/></td><td><span className="list-progress"><i style={{width:`${task.progress}%`}}/></span><small>{task.progress}%</small></td><td>{new Date(task.created_at*1000).toLocaleString("zh-CN")}</td><td><button className="list-open" onClick={()=>onOpen(task)}>查看 →</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function Status({ value }: { value: string }) {
@@ -218,7 +236,7 @@ const coverSizeGroups = [
 ] as const;
 
 function ImageSizePicker({value,onChange}:{value:string[];onChange:(value:string[])=>void}) {
-  return <fieldset className="image-size-picker"><legend>图片尺寸</legend><p>可多选；每个比例将单独生成一张封面图片</p><div>{coverSizeGroups.map(group=><section key={group.label}><b>{group.label}</b><div>{group.options.map(([size,label])=><label key={size}><input type="checkbox" checked={value.includes(size)} onChange={event=>onChange(event.target.checked?[...value,size]:value.filter(item=>item!==size))}/><span>{label}</span></label>)}</div></section>)}</div><small className="image-size-note">由于中转站的 gpt-image-2 接口实际调用 gpt-image-2-codex，同一条提示词需按比例分别调用一次接口才能生成一张图片；该接口不支持设置分辨率参数，仅会在提示词中追加图片比例。</small></fieldset>;
+  return <fieldset className="image-size-picker"><legend>图片尺寸 <em>*</em></legend><p>可多选；每个比例将单独生成一张封面图片</p><div>{coverSizeGroups.map(group=><section key={group.label}><b>{group.label}</b><div>{group.options.map(([size,label])=><label key={size}><input type="checkbox" checked={value.includes(size)} onChange={event=>onChange(event.target.checked?[...value,size]:value.filter(item=>item!==size))}/><span>{label}</span></label>)}</div></section>)}</div>{!value.length&&<small className="image-size-required">请至少选择一个图片尺寸</small>}<small className="image-size-note">由于中转站的 gpt-image-2 接口实际调用 gpt-image-2-codex，同一条提示词需按比例分别调用一次接口才能生成一张图片；该接口不支持设置分辨率参数，仅会在提示词中追加图片比例。</small></fieldset>;
 }
 
 function PromptLibraryDialog({connected,onClose,onSaved}:{connected:boolean;onClose:()=>void;onSaved:()=>void}) {
@@ -233,7 +251,21 @@ function PromptLibraryDialog({connected,onClose,onSaved}:{connected:boolean;onCl
   const remove=async(id:string)=>{await fetch(`${API}/api/prompts/${id}`,{method:"DELETE"});load();onSaved();};
   const visible=items.filter(x=>x.kind===kind);
   const switchKind=(next:"writing"|"cover")=>{setKind(next);clearEditor()};
-  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal config-modal prompt-library"><div className="modal-head"><div><p className="eyebrow">全局配置</p><h2>提示词库</h2><p className="modal-subtitle">集中维护创作模板，新建工作流时直接勾选使用</p></div><button className="close" onClick={onClose}>×</button></div><div className="library-tabs"><button className={kind==="writing"?"active":""} onClick={()=>switchKind("writing")}>分享稿提示词 <em>{items.filter(x=>x.kind==="writing").length}</em></button><button className={kind==="cover"?"active":""} onClick={()=>switchKind("cover")}>封面提示词 <em>{items.filter(x=>x.kind==="cover").length}</em></button></div><div className="library-layout"><section className="template-list"><div className="list-caption"><span>已添加模板</span><small>{visible.length} 个</small></div>{visible.map((item,index)=><article className={editingId===item.id?"editing":""} key={item.id}><span className="template-number">{String(index+1).padStart(2,"0")}</span><div className="template-copy"><b>{item.name}</b><p>{item.text}</p></div><div className="template-actions"><button onClick={()=>edit(item)}>编辑</button><button className="danger-link" onClick={()=>remove(item.id)}>删除</button></div></article>)}{!visible.length&&<div className="empty-template"><span>◇</span><p>还没有模板，从右侧添加第一个</p></div>}</section><section className="template-composer"><div className="composer-title"><span>{editingId?"编":"＋"}</span><div><h3>{editingId?"编辑模板":"添加新模板"}</h3><p>{kind==="writing"?"定义文案的结构、语气与长度":"定义封面的风格、构图与色彩"}</p></div></div><label>模板名称<input value={name} onChange={e=>setName(e.target.value)} placeholder={kind==="writing"?"例如：知识型口播":"例如：复古油画"}/></label><label>提示词内容<textarea value={text} onChange={e=>setText(e.target.value)} placeholder={kind==="writing"?"描述分享稿的语气、结构和长度要求":"描述封面的风格、构图和色彩要求"}/></label>{kind==="cover"&&<ImageSizePicker value={imageSizes} onChange={setImageSizes}/>}<div className="composer-actions">{editingId&&<button className="secondary" onClick={clearEditor}>取消编辑</button>}<button className="primary action-button" disabled={!connected||!name.trim()||!text.trim()||(kind==="cover"&&!imageSizes.length)||saving} onClick={saveTemplate}><span aria-hidden="true">{editingId?"✓":"＋"}</span>{saving?"保存中…":editingId?"保存修改":"添加模板"}</button></div></section></div></div></div>;
+  const writingCount=items.filter(item=>item.kind==="writing").length;
+  const coverCount=items.filter(item=>item.kind==="cover").length;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={event=>event.target===event.currentTarget&&onClose()}>
+    <div className="modal config-modal prompt-library">
+      <div className="modal-head"><div><p className="eyebrow">全局配置</p><h2>提示词库</h2></div><button className="close" onClick={onClose}>×</button></div>
+      <nav className="settings-tabs prompt-tabs" aria-label="提示词分类">
+        <button className={kind==="writing"?"active":""} onClick={()=>switchKind("writing")}><span aria-hidden="true">文</span><div><b>分享稿提示词 <em>{writingCount}</em></b><small>定义分享稿结构、语气与长度</small></div></button>
+        <button className={kind==="cover"?"active":""} onClick={()=>switchKind("cover")}><span aria-hidden="true">画</span><div><b>封面提示词 <em>{coverCount}</em></b><small>定义封面风格、构图与色彩</small></div></button>
+      </nav>
+      <div className="library-layout">
+        <section className="template-list"><div className="list-caption"><span>已添加模板</span><small>{visible.length} 个</small></div>{visible.map((item,index)=><article className={editingId===item.id?"editing":""} key={item.id}><span className="template-number">{String(index+1).padStart(2,"0")}</span><div className="template-copy"><b>{item.name}</b><p>{item.text}</p></div><div className="template-actions"><button onClick={()=>edit(item)}>编辑</button><button className="danger-link" onClick={()=>remove(item.id)}>删除</button></div></article>)}{!visible.length&&<div className="empty-template"><span>◇</span><p>还没有模板，添加第一个模板吧</p></div>}</section>
+        <section className="template-composer"><div className="composer-title"><span>{editingId?"编":"＋"}</span><div><h3>{editingId?"编辑模板":"添加新模板"}</h3><p>{kind==="writing"?"定义文案的结构、语气与长度":"定义封面的风格、构图与色彩"}</p></div></div><label>模板名称<input value={name} onChange={event=>setName(event.target.value)} placeholder={kind==="writing"?"例如：知识型口播":"例如：复古油画"}/></label><label>提示词内容<textarea value={text} onChange={event=>setText(event.target.value)} placeholder={kind==="writing"?"描述分享稿的语气、结构和长度要求":"描述封面的风格、构图和色彩要求"}/></label>{kind==="cover"&&<ImageSizePicker value={imageSizes} onChange={setImageSizes}/>}<div className="composer-actions">{editingId&&<button className="secondary" onClick={clearEditor}>取消编辑</button>}<button className="primary action-button" disabled={!connected||!name.trim()||!text.trim()||(kind==="cover"&&!imageSizes.length)||saving} onClick={saveTemplate}><span aria-hidden="true">{editingId?"✓":"＋"}</span>{saving?"保存中…":editingId?"保存修改":"添加模板"}</button></div></section>
+      </div>
+    </div>
+  </div>;
 }
 
 function CoverGallery({covers,bookTitle,coverPrompts}:{covers:Asset[];bookTitle:string;coverPrompts?:PromptTemplate[]}) {

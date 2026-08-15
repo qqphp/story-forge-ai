@@ -266,9 +266,13 @@ class StoryForgeApiTests(unittest.TestCase):
         with patch.object(main, "process_workflow"):
             created = self.client.post("/api/workflows", json={"book_title": "待删除", "writing_prompt_ids": [writing["id"]], "cover_prompt_ids": [cover["id"]]})
         workflow_id = created.json()["id"]
-        owned_cover = main.MEDIA / f"{workflow_id}-cover-1.png"
-        owned_audio = main.MEDIA / f"{workflow_id}-d1-v1.mp3"
-        unrelated = main.MEDIA / "another-workflow-cover-1.png"
+        workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
+        self.assertRegex(workflow["output_dir"], r"^\d{8}[a-z]{4}\d+$")
+        output_dir = main.MEDIA / workflow["output_dir"]
+        owned_cover = output_dir / "cover-1.png"
+        owned_audio = output_dir / "draft-1-voice-1.mp3"
+        unrelated = main.MEDIA / "another-workflow" / "cover-1.png"
+        unrelated.parent.mkdir()
         owned_cover.write_bytes(b"cover"); owned_audio.write_bytes(b"audio"); unrelated.write_bytes(b"keep")
         with main.db() as conn:
             conn.execute("UPDATE workflows SET status='completed' WHERE id=?", (workflow_id,))
@@ -276,6 +280,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["removed_files"], 2)
         self.assertFalse(owned_cover.exists()); self.assertFalse(owned_audio.exists())
+        self.assertFalse(output_dir.exists())
         self.assertTrue(unrelated.exists())
         self.assertEqual(self.client.get(f"/api/workflows/{workflow_id}").status_code, 404)
 

@@ -7,12 +7,16 @@ import html
 import json
 import math
 import os
+import secrets
+import shutil
 import sqlite3
+import string
 import subprocess
 import time
 import uuid
 import wave
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -131,6 +135,7 @@ app.add_middleware(
 app.mount("/media", StaticFiles(directory=MEDIA), name="media")
 app.mount("/voice-samples", StaticFiles(directory=VOICE_SAMPLES), name="voice-samples")
 DELETING_WORKFLOWS: set[str] = set()
+DELETING_WORKFLOW_DIRS: dict[str, str] = {}
 VOICE_DOWNLOAD_STATUS: dict[str, Any] = {"status": "idle", "total": 0, "completed": 0, "failed": 0}
 VOICE_TRANSLATION_LOCK = asyncio.Lock()
 VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流畅自然的AI配音。"
@@ -283,14 +288,42 @@ def save_workflow(wid: str, *, status: str | None = None, step: int | None = Non
         )
 
 
-def cleanup_workflow_media(wid: str) -> int:
+def create_workflow_media_dir() -> tuple[str, Path]:
     media_root = MEDIA.resolve()
-    removed = 0
-    for candidate in MEDIA.iterdir():
-        resolved = candidate.resolve()
-        if candidate.is_file() and resolved.parent == media_root and candidate.name.startswith(f"{wid}-"):
-            candidate.unlink()
-            removed += 1
+    for _ in range(20):
+        random_letters = "".join(secrets.choice(string.ascii_lowercase) for _ in range(4))
+        folder_name = f"{datetime.now().strftime('%Y%m%d')}{random_letters}{int(time.time())}"
+        target = (MEDIA / folder_name).resolve()
+        if target.parent != media_root:
+            raise RuntimeError("工作流产物目录越界")
+        try:
+            target.mkdir(parents=False, exist_ok=False)
+            return folder_name, target
+        except FileExistsError:
+            continue
+    raise RuntimeError("无法创建唯一的工作流产物目录")
+
+
+def workflow_media_dir(output_dir: str) -> Path:
+    target = (MEDIA / output_dir).resolve()
+    if target.parent != MEDIA.resolve():
+        raise RuntimeError("工作流产物目录越界")
+    return target
+
+
+def cleanup_workflow_media(wid: str, output_dir: str | None = None) -> int:
+    if not output_dir:
+        with db() as conn:
+            row = conn.execute("SELECT payload FROM workflows WHERE id=?", (wid,)).fetchone()
+        if row:
+            output_dir = json.loads(row["payload"]).get("output_dir")
+    if not output_dir:
+        return 0
+    target = workflow_media_dir(output_dir)
+    if not target.is_dir():
+        return 0
+    removed = sum(1 for candidate in target.rglob("*") if candidate.is_file())
+    shutil.rmtree(target)
     return removed
 
 
@@ -453,11 +486,11 @@ def audio_extension(output_format: str) -> str:
     return ".audio"
 
 
-async def download_background_music(music: dict[str, Any], wid: str) -> Path:
+async def download_background_music(music: dict[str, Any], output_dir: Path) -> Path:
     suffix = Path(urlparse(music["url"]).path).suffix.lower()
     if suffix not in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm"):
         suffix = ".audio"
-    target = MEDIA / f"{wid}-background{suffix}"
+    target = output_dir / f"background{suffix}"
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
         response = await client.get(music["url"])
         response.raise_for_status()
@@ -500,6 +533,8 @@ async def process_workflow(wid: str) -> None:
             row = conn.execute("SELECT * FROM workflows WHERE id=?", (wid,)).fetchone()
         if not row: return
         item = workflow_row(row); settings = get_settings()
+        output_dir = workflow_media_dir(item["output_dir"])
+        output_dir.mkdir(parents=False, exist_ok=True)
         title, author = item["book_title"], item["author"]
         save_workflow(wid, status="running", step=1, progress=8)
         await asyncio.sleep(.4)
@@ -537,7 +572,7 @@ async def process_workflow(wid: str) -> None:
         for di, draft in enumerate(polished):
             for vi, voice in enumerate(voices):
                 if wid in DELETING_WORKFLOWS: return
-                base = MEDIA / f"{wid}-d{di+1}-v{vi+1}"
+                base = output_dir / f"draft-{di+1}-voice-{vi+1}"
                 target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
                 used_real_speech = await speech(
                     draft["text"], voice, speech_rate, settings, target,
@@ -548,7 +583,7 @@ async def process_workflow(wid: str) -> None:
                 )
                 if wid in DELETING_WORKFLOWS: return
                 actual = target if target.exists() else base.with_suffix(".wav")
-                audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
+                audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{item['output_dir']}/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
         save_workflow(wid, step=4, progress=65, payload_update={"audio": audio_items})
 
         cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")]
@@ -559,30 +594,30 @@ async def process_workflow(wid: str) -> None:
             for image_ratio in prompt.get("image_sizes") or DEFAULT_IMAGE_SIZES:
                 if wid in DELETING_WORKFLOWS: return
                 cover_index += 1
-                path = MEDIA / f"{wid}-cover-{cover_index}.png"
+                path = output_dir / f"cover-{cover_index}.png"
                 used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
                 if wid in DELETING_WORKFLOWS: return
-                covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
+                covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
         save_workflow(wid, step=5, progress=82, payload_update={"covers": covers})
 
         videos = []
         ffmpeg = os.getenv("FFMPEG_PATH", "ffmpeg")
         for i, audio in enumerate(audio_items):
             if wid in DELETING_WORKFLOWS: return
-            cover = MEDIA / Path(covers[i % len(covers)]["url"]).name
-            audio_path = MEDIA / Path(audio["url"]).name
-            out = MEDIA / f"{wid}-video-{i+1}.mp4"
+            cover = output_dir / Path(covers[i % len(covers)]["url"]).name
+            audio_path = output_dir / Path(audio["url"]).name
+            out = output_dir / f"video-{i+1}.mp4"
             cmd = video_command(ffmpeg, cover, audio_path, out)
             result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=180)
             if result.returncode == 0:
-                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{out.name}",
+                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}",
                                "background_music": background_music.get("name") if background_music else ""})
         save_workflow(wid, status="completed", step=6, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save_workflow(wid, status="failed", payload_update={"error": str(exc)[:500]})
     finally:
         if wid in DELETING_WORKFLOWS:
-            cleanup_workflow_media(wid)
+            cleanup_workflow_media(wid, DELETING_WORKFLOW_DIRS.pop(wid, None))
             DELETING_WORKFLOWS.discard(wid)
 
 
@@ -853,11 +888,14 @@ def workflow_get(wid: str):
 @app.delete("/api/workflows/{wid}")
 def workflow_delete(wid: str):
     with db() as conn:
-        row = conn.execute("SELECT status FROM workflows WHERE id=?", (wid,)).fetchone()
+        row = conn.execute("SELECT status,payload FROM workflows WHERE id=?", (wid,)).fetchone()
         if not row: raise HTTPException(404, "工作流不存在")
+        output_dir = json.loads(row["payload"]).get("output_dir")
         if row["status"] in ("queued", "running"):
             DELETING_WORKFLOWS.add(wid)
-        removed_files = cleanup_workflow_media(wid)
+            if output_dir:
+                DELETING_WORKFLOW_DIRS[wid] = output_dir
+        removed_files = cleanup_workflow_media(wid, output_dir)
         conn.execute("DELETE FROM workflows WHERE id=?", (wid,))
     return {"deleted": True, "removed_files": removed_files}
 
@@ -878,7 +916,9 @@ def create_workflow_record(book: BookCreate, options: WorkflowOptions) -> str:
         music_row = conn.execute("SELECT id,name,url,category FROM background_music WHERE id=?", (options.background_music_id,)).fetchone() if options.background_music_id else None
         if options.background_music_id and not music_row:
             raise HTTPException(422, "选择的背景音乐不存在")
-    payload = {"writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
+    output_dir, _ = create_workflow_media_dir()
+    payload = {"output_dir": output_dir,
+               "writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
                "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "image_sizes": json.loads(r["image_sizes"]), "enabled": True} for r in cover_rows],
                "voices": [options.voice], "speech_rate": options.speech_rate,
                "background_music": dict(music_row) if music_row else None,

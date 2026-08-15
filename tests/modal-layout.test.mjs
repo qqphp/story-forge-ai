@@ -63,6 +63,7 @@ test("background music supports HTTPS entry search and pagination", () => {
   assert.match(page, /className="music-player"/);
   assert.match(page, /<audio key=\{playingMusic\?\.id/);
   assert.match(css, /\.music-list\{min-height:0\}/);
+  assert.match(page, /const voicePageSize=8; const musicPageSize=6;/);
 });
 
 test("workflow creation supports background music mixing controls", () => {
@@ -99,6 +100,36 @@ test("configuration and request logs use standalone sidebar pages", () => {
   assert.match(page, /type="datetime-local"/);
   assert.match(page, /method:"DELETE"/);
   assert.match(css, /\.config-page \.modal-backdrop\{position:static/);
+  assert.match(css, /\.config-page \.modal\{[^}]*border:0;[^}]*background:transparent;[^}]*box-shadow:none/);
+  assert.match(css, /\.config-page \.modal-head\{display:none\}/);
+});
+
+test("prompt library tabs have icons subtitles and a single-column mobile editor", () => {
+  assert.match(page, /className="settings-tabs prompt-tabs"/);
+  assert.match(page, /<span aria-hidden="true">文<\/span>/);
+  assert.match(page, /<small>定义分享稿结构、语气与长度<\/small>/);
+  assert.match(page, /<span aria-hidden="true">画<\/span>/);
+  assert.match(page, /<small>定义封面风格、构图与色彩<\/small>/);
+  assert.match(css, /\.config-page \.library-layout\{grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(css, /\.config-page \.template-composer\{position:static;top:auto\}/);
+  assert.match(css, /\.config-page \.prompt-tabs\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+});
+
+test("workspace supports compact mobile navigation and bulk list deletion", () => {
+  assert.match(page, /setWorkView\("list"\)/);
+  assert.match(page, /function TaskList/);
+  assert.match(page, /全选当前结果/);
+  assert.match(page, /删除所选/);
+  assert.match(page, /Promise\.all\(ids\.map\(id=>fetch/);
+  assert.match(css, /\.app-shell\{grid-template-columns:196px/);
+  assert.match(css, /\.side-nav\{position:fixed;inset:auto 0 0 0/);
+  assert.match(css, /grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
+});
+
+test("cover prompt requires at least one image size", () => {
+  assert.match(page, /kind==="cover"&&!imageSizes\.length/);
+  assert.match(page, /<ImageSizePicker value=\{imageSizes\} onChange=\{setImageSizes\}\/>/);
+  assert.match(page, /disabled=\{!connected\|\|!name\.trim\(\)\|\|!text\.trim\(\)\|\|\(kind==="cover"&&!imageSizes\.length\)\|\|saving\}/);
 });
 
 test("batch creation starts with six rows and shares generation settings", () => {
