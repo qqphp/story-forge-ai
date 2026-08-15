@@ -34,6 +34,17 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertTrue(self.client.get("/api/health").json()["ok"])
         self.assertEqual(self.client.get("/api/workflows").json(), [])
 
+    def test_douyin_page_private_network_preflight_is_allowed(self):
+        response = self.client.options("/api/publish/extension/tasks/next", headers={
+            "Origin": "https://creator.douyin.com",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "X-StoryForge-Token",
+            "Access-Control-Request-Private-Network": "true",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], "https://creator.douyin.com")
+        self.assertEqual(response.headers["access-control-allow-private-network"], "true")
+
     def test_create_rejects_missing_title(self):
         response = self.client.post("/api/workflows", json={"book_title": ""})
         self.assertEqual(response.status_code, 422)
@@ -114,6 +125,61 @@ class StoryForgeApiTests(unittest.TestCase):
         cleared = self.client.delete("/api/request-logs")
         self.assertEqual(cleared.json()["deleted"], 2)
         self.assertEqual(self.client.get("/api/request-logs").json()["total"], 0)
+
+    def test_tag_topic_generation_is_logged_with_its_own_request_type(self):
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"choices": [{"message": {"content": '{"tags":[],"topics":[]}'}}]}
+
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def post(self, *args, **kwargs): return Response()
+
+        settings = {**main.DEFAULT_SETTINGS, "api_key": "key", "api_base": "https://example.com/v1"}
+        with patch.object(main.httpx, "AsyncClient", return_value=Client()):
+            asyncio.run(main.llm([{"role": "user", "content": "生成话题"}], settings, "标签话题生成"))
+        listing = self.client.get("/api/request-logs", params={"request_type": "标签话题生成"}).json()
+        self.assertEqual(listing["total"], 1)
+        self.assertEqual(listing["items"][0]["request_params"]["messages"][0]["content"], "生成话题")
+
+    def test_new_workflow_generates_six_tags_and_topics_before_covers(self):
+        with patch.object(main, "process_workflow"):
+            created = self.client.post("/api/workflows", json={"book_title": "西游记"})
+        workflow_id = created.json()["id"]
+
+        async def fake_llm(messages, _settings, request_type="文稿生成"):
+            if request_type == "标签话题生成":
+                return '{"tags":["古典文学","神魔小说","人物成长","名著阅读","团队协作","东方想象"],"topics":["西游记","读书","好书推荐","名著解读","读书分享","经典文学"]}'
+            if "书籍简介" in messages[0]["content"]:
+                return "一部讲述取经团队历经考验、坚持理想的古典小说。"
+            if "Humanizer-zh" in messages[0]["content"]:
+                return "这是一篇更自然的《西游记》分享稿。"
+            return "这是一篇《西游记》分享稿。"
+
+        async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
+            target.write_bytes(b"audio")
+            return False
+
+        async def fake_cover(path, *_args):
+            Image.new("RGB", (120, 160), "navy").save(path, "PNG")
+            return True, "120×160"
+
+        class FailedVideo:
+            returncode = 1
+
+        with patch.object(main, "llm", side_effect=fake_llm), \
+             patch.object(main, "speech", side_effect=fake_speech), \
+             patch.object(main, "generate_cover", side_effect=fake_cover), \
+             patch.object(main.subprocess, "run", return_value=FailedVideo()):
+            asyncio.run(main.process_workflow(workflow_id))
+        workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
+        self.assertEqual(workflow["step"], 7)
+        self.assertEqual(workflow["status"], "completed")
+        self.assertEqual(len(workflow["tags"]), 6)
+        self.assertEqual(len(workflow["topics"]), 6)
+        self.assertEqual(workflow["topics"][0], "西游记")
+        self.assertTrue(workflow["covers"])
 
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()
@@ -283,6 +349,72 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertFalse(output_dir.exists())
         self.assertTrue(unrelated.exists())
         self.assertEqual(self.client.get(f"/api/workflows/{workflow_id}").status_code, 404)
+
+    def test_douyin_publish_task_pairing_and_status_flow(self):
+        with patch.object(main, "process_workflow"):
+            created = self.client.post("/api/workflows", json={"book_title": "准备发布"})
+        workflow_id = created.json()["id"]
+        workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
+        video_url = f"/media/{workflow['output_dir']}/video-1.mp4"
+        cover_url = f"/media/{workflow['output_dir']}/cover-1.png"
+        horizontal_cover_url = f"/media/{workflow['output_dir']}/cover-2.png"
+        (main.MEDIA / workflow["output_dir"] / "video-1.mp4").write_bytes(b"test-video")
+        (main.MEDIA / workflow["output_dir"] / "cover-1.png").write_bytes(b"test-cover")
+        (main.MEDIA / workflow["output_dir"] / "cover-2.png").write_bytes(b"horizontal-cover")
+        with main.db() as conn:
+            row = conn.execute("SELECT payload FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+            payload = main.json.loads(row["payload"])
+            payload.update(
+                videos=[{"url": video_url}], tags=["文学名著", "人物成长"],
+                topics=["读书", "好书推荐"],
+                covers=[{"url": cover_url, "image_ratio": "3:4"}, {"url": horizontal_cover_url, "image_ratio": "4:3"}],
+            )
+            conn.execute("UPDATE workflows SET status='completed',payload=? WHERE id=?",
+                         (main.json.dumps(payload, ensure_ascii=False), workflow_id))
+        task_response = self.client.post("/api/publish/tasks", json={
+            "workflow_id": workflow_id, "platform": "douyin", "title": "一本值得读的书",
+            "description": "这是作品简介", "topics": ["读书", "好书推荐", "#读书"],
+            "video_url": video_url, "cover_urls": [cover_url, horizontal_cover_url],
+        })
+        self.assertEqual(task_response.status_code, 201)
+        task = task_response.json()
+        self.assertEqual(task["status"], "prepared")
+        self.assertEqual(task["tags"], ["文学名著", "人物成长"])
+        self.assertEqual(task["topics"], ["读书", "好书推荐"])
+        self.assertEqual([cover["image_ratio"] for cover in task["covers"]], ["3:4", "4:3"])
+        pairing = self.client.get("/api/publish/pairing").json()
+        self.assertEqual(self.client.get("/api/publish/extension/tasks/next").status_code, 401)
+        headers = {"X-StoryForge-Token": pairing["token"]}
+        next_task = self.client.get("/api/publish/extension/tasks/next", headers=headers).json()["task"]
+        self.assertEqual(next_task["id"], task["id"])
+        video = self.client.get(f"/api/publish/extension/tasks/{task['id']}/video", headers=headers)
+        self.assertEqual(video.status_code, 200)
+        self.assertEqual(video.content, b"test-video")
+        cover = self.client.get(f"/api/publish/extension/tasks/{task['id']}/cover", headers=headers)
+        self.assertEqual(cover.status_code, 200)
+        self.assertEqual(cover.content, b"test-cover")
+        horizontal_cover = self.client.get(f"/api/publish/extension/tasks/{task['id']}/covers/1", headers=headers)
+        self.assertEqual(horizontal_cover.status_code, 200)
+        self.assertEqual(horizontal_cover.content, b"horizontal-cover")
+        filling = self.client.put(f"/api/publish/extension/tasks/{task['id']}", headers=headers,
+                                  json={"status": "filling"})
+        self.assertEqual(filling.status_code, 200)
+        ready = self.client.put(f"/api/publish/extension/tasks/{task['id']}", headers=headers,
+                                json={"status": "ready"})
+        self.assertEqual(ready.json()["status"], "ready")
+        completed = self.client.put(f"/api/publish/extension/tasks/{task['id']}", headers=headers,
+                                    json={"status": "completed"})
+        self.assertEqual(completed.json()["status"], "completed")
+
+    def test_publish_task_rejects_foreign_or_missing_video(self):
+        with patch.object(main, "process_workflow"):
+            workflow_id = self.client.post("/api/workflows", json={"book_title": "无视频"}).json()["id"]
+        missing = self.client.post("/api/publish/tasks", json={"workflow_id": workflow_id, "title": "测试"})
+        foreign = self.client.post("/api/publish/tasks", json={
+            "workflow_id": workflow_id, "title": "测试", "video_url": "/media/other/video.mp4"
+        })
+        self.assertEqual(missing.status_code, 422)
+        self.assertEqual(foreign.status_code, 422)
 
 
 if __name__ == "__main__":

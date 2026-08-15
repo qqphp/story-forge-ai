@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>砚界发布助手</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <header><span>砚</span><div><b>抖音发布助手</b><small>StoryForge Local</small></div></header>
+    <main>
+      <label>本地服务地址<input id="apiBase" value="http://127.0.0.1:8000" spellcheck="false"></label>
+      <label>扩展配对码<input id="token" type="password" placeholder="从发布中心复制" spellcheck="false"></label>
+      <div class="actions"><button id="save">保存并检测</button><button id="open" class="secondary">打开抖音创作页</button></div>
+      <p id="status" class="status">尚未连接</p>
+      <section id="task" hidden><small>待发布任务</small><b id="taskTitle"></b><p id="taskBook"></p></section>
+    </main>
+    <footer>登录会话由浏览器保管；扩展不会读取 Cookie。</footer>
+    <script src="popup.js"></script>
+  </body>
+</html>

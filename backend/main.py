@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +46,7 @@ VOICE_SAMPLES.mkdir(exist_ok=True)
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
         conn.commit()
@@ -83,11 +84,34 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_request_logs_type_created_at ON request_logs(request_type, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
+            CREATE TABLE IF NOT EXISTS application_meta (
+              key TEXT PRIMARY KEY, value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS publish_tasks (
+              id TEXT PRIMARY KEY,
+              workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+              platform TEXT NOT NULL CHECK(platform IN ('douyin')),
+              status TEXT NOT NULL CHECK(status IN ('prepared','filling','ready','completed','failed','cancelled')),
+              title TEXT NOT NULL, description TEXT NOT NULL, tags TEXT NOT NULL,
+              topics TEXT NOT NULL DEFAULT '[]', video_url TEXT NOT NULL,
+              cover_url TEXT NOT NULL DEFAULT '', covers TEXT NOT NULL DEFAULT '[]',
+              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+              error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_publish_tasks_platform_status_created
+              ON publish_tasks(platform, status, created_at);
             """
         )
+        if not conn.execute("SELECT 1 FROM application_meta WHERE key='extension_pairing_token'").fetchone():
+            conn.execute("INSERT INTO application_meta(key,value) VALUES('extension_pairing_token',?)", (secrets.token_hex(16),))
         columns = {column["name"] for column in conn.execute("PRAGMA table_info(prompt_templates)")}
         if "image_sizes" not in columns:
             conn.execute("ALTER TABLE prompt_templates ADD COLUMN image_sizes TEXT NOT NULL DEFAULT '[\"2:3\"]'")
+        publish_columns = {column["name"] for column in conn.execute("PRAGMA table_info(publish_tasks)")}
+        if "topics" not in publish_columns:
+            conn.execute("ALTER TABLE publish_tasks ADD COLUMN topics TEXT NOT NULL DEFAULT '[]'")
+        if "covers" not in publish_columns:
+            conn.execute("ALTER TABLE publish_tasks ADD COLUMN covers TEXT NOT NULL DEFAULT '[]'")
         count = conn.execute("SELECT COUNT(*) AS count FROM prompt_templates").fetchone()["count"]
         if count == 0:
             now = int(time.time())
@@ -127,11 +151,22 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="StoryForge AI", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://creator.douyin.com"],
+    allow_origin_regex=r"chrome-extension://[a-p]{32}",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def allow_local_extension_private_network(request, call_next):
+    response = await call_next(request)
+    if request.headers.get("access-control-request-private-network") == "true":
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
+
 app.mount("/media", StaticFiles(directory=MEDIA), name="media")
 app.mount("/voice-samples", StaticFiles(directory=VOICE_SAMPLES), name="voice-samples")
 DELETING_WORKFLOWS: set[str] = set()
@@ -214,6 +249,35 @@ class SettingsPayload(BaseModel):
     speech_rate: int = Field(default=0, ge=-50, le=100)
 
 
+class PublishTaskCreate(BaseModel):
+    workflow_id: str = Field(min_length=1, max_length=40)
+    platform: str = Field(default="douyin", pattern="^douyin$")
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=2000)
+    topics: list[str] = Field(default_factory=list, max_length=10)
+    video_url: str = Field(default="", max_length=1000)
+    cover_urls: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("topics")
+    @classmethod
+    def clean_topics(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip().lstrip("#").strip() for value in values]
+        cleaned = [value for value in cleaned if value]
+        if any(len(value) > 30 for value in cleaned):
+            raise ValueError("单个话题不能超过30个字符")
+        return list(dict.fromkeys(cleaned))
+
+    @field_validator("cover_urls")
+    @classmethod
+    def clean_cover_urls(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+class PublishTaskStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(filling|ready|completed|failed)$")
+    error: str = Field(default="", max_length=500)
+
+
 class BackgroundMusicCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     url: str = Field(min_length=1, max_length=2000)
@@ -262,6 +326,27 @@ def workflow_row(row: sqlite3.Row) -> dict[str, Any]:
         "progress": row["progress"], "created_at": row["created_at"],
         "updated_at": row["updated_at"], **payload,
     }
+
+
+def publish_task_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["tags"] = json.loads(result["tags"])
+    result["topics"] = json.loads(result.get("topics") or "[]")
+    result["covers"] = json.loads(result.get("covers") or "[]")
+    return result
+
+
+def extension_pairing_token() -> str:
+    with db() as conn:
+        row = conn.execute("SELECT value FROM application_meta WHERE key='extension_pairing_token'").fetchone()
+    if not row:
+        raise RuntimeError("浏览器扩展配对码尚未初始化")
+    return row["value"]
+
+
+def require_extension_token(value: str | None) -> None:
+    if not value or not secrets.compare_digest(value, extension_pairing_token()):
+        raise HTTPException(401, "浏览器扩展配对码无效")
 
 
 def log_request(request_type: str, request_url: str, request_params: dict[str, Any]) -> None:
@@ -327,12 +412,12 @@ def cleanup_workflow_media(wid: str, output_dir: str | None = None) -> int:
     return removed
 
 
-async def llm(messages: list[dict[str, str]], settings: dict[str, Any]) -> str | None:
+async def llm(messages: list[dict[str, str]], settings: dict[str, Any], request_type: str = "文稿生成") -> str | None:
     if not settings.get("api_key"):
         return None
     url = settings["api_base"].rstrip("/") + "/chat/completions"
     payload = {"model": settings["model"], "messages": messages, "temperature": 0.75}
-    log_request("文稿生成", url, payload)
+    log_request(request_type, url, payload)
     async with httpx.AsyncClient(timeout=90) as client:
         response = await client.post(
             url,
@@ -353,6 +438,30 @@ def demo_copy(title: str, author: str, prompt: str, index: int) -> str:
         "那些犹豫、选择和未说出口的话，都在故事里获得了新的解释。\n\n"
         f"推荐你读《{title}》。不必赶进度，给它一个安静的晚上，也给自己一次重新整理内心的机会。"
     )
+
+
+def generated_taxonomy(raw: str | None, title: str) -> tuple[list[str], list[str]]:
+    def cleaned(values: Any, fallbacks: list[str]) -> list[str]:
+        source = values if isinstance(values, list) else []
+        terms = [str(value).strip().lstrip("#").strip().replace(" ", "") for value in source]
+        terms.extend(fallbacks)
+        return [value for value in dict.fromkeys(terms) if value and len(value) <= 30][:6]
+
+    parsed: dict[str, Any] = {}
+    if raw:
+        candidate = raw.strip()
+        if candidate.startswith("```"):
+            candidate = candidate.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        try:
+            value = json.loads(candidate)
+            if isinstance(value, dict):
+                parsed = value
+        except json.JSONDecodeError:
+            parsed = {}
+    safe_title = title.strip().replace(" ", "")[:30]
+    tags = cleaned(parsed.get("tags"), [safe_title, "图书", "阅读", "文学", "书籍分享", "阅读思考", "内容创作", "经典阅读"])
+    topics = cleaned(parsed.get("topics"), [safe_title, "读书", "好书推荐", "读书分享", "阅读", "书单推荐", "一起读书", "每日阅读"])
+    return tags, topics
 
 
 def make_cover(path: Path, title: str, author: str, index: int) -> None:
@@ -565,6 +674,7 @@ async def process_workflow(wid: str) -> None:
             polished.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": improved or raw.replace("真正动人的地方", "我最喜欢的是")})
         save_workflow(wid, step=3, progress=45, payload_update={"original_drafts": originals, "polished_drafts": polished})
 
+        save_workflow(wid, step=4, progress=48)
         voices = item.get("voices") or settings.get("voices") or ["zh-CN-XiaoxiaoNeural"]
         speech_rate = item.get("speech_rate", settings.get("speech_rate", 0))
         background_music = item.get("background_music")
@@ -584,7 +694,16 @@ async def process_workflow(wid: str) -> None:
                 if wid in DELETING_WORKFLOWS: return
                 actual = target if target.exists() else base.with_suffix(".wav")
                 audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{item['output_dir']}/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
-        save_workflow(wid, step=4, progress=65, payload_update={"audio": audio_items})
+        save_workflow(wid, step=5, progress=64, payload_update={"audio": audio_items})
+
+        share_text = "\n\n---\n\n".join(draft["text"] for draft in polished)
+        taxonomy_raw = await llm([
+            {"role": "system", "content": "你是中文内容运营编辑。根据给定书籍信息与分享稿生成内容分类。只输出严格JSON，不要Markdown：{\"tags\":[6个简短标签],\"topics\":[6个适合短视频平台的话题词]}。每项不带#，不含空格，不超过15个汉字，去重并与内容高度相关。"},
+            {"role": "user", "content": f"书籍标题：{title}\n书籍简介：{description}\n分享稿：\n{share_text}"},
+        ], settings, "标签话题生成")
+        if wid in DELETING_WORKFLOWS: return
+        tags, topics = generated_taxonomy(taxonomy_raw, title)
+        save_workflow(wid, step=6, progress=74, payload_update={"tags": tags, "topics": topics})
 
         cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")]
         if not cover_prompts: cover_prompts = [{"text": "克制、文学感、适合短视频竖版", "enabled": True, "image_sizes": DEFAULT_IMAGE_SIZES}]
@@ -598,7 +717,7 @@ async def process_workflow(wid: str) -> None:
                 used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
                 if wid in DELETING_WORKFLOWS: return
                 covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
-        save_workflow(wid, step=5, progress=82, payload_update={"covers": covers})
+        save_workflow(wid, step=7, progress=88, payload_update={"covers": covers})
 
         videos = []
         ffmpeg = os.getenv("FFMPEG_PATH", "ffmpeg")
@@ -612,7 +731,7 @@ async def process_workflow(wid: str) -> None:
             if result.returncode == 0:
                 videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}",
                                "background_music": background_music.get("name") if background_music else ""})
-        save_workflow(wid, status="completed", step=6, progress=100, payload_update={"videos": videos})
+        save_workflow(wid, status="completed", step=7, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save_workflow(wid, status="failed", payload_update={"error": str(exc)[:500]})
     finally:
@@ -871,6 +990,178 @@ def prompt_delete(prompt_id: str):
         if result.rowcount == 0: raise HTTPException(404, "提示词不存在")
 
 
+@app.get("/api/publish/pairing")
+def publish_pairing():
+    return {"token": extension_pairing_token(), "api_base": "http://127.0.0.1:8000"}
+
+
+@app.post("/api/publish/pairing/rotate")
+def publish_pairing_rotate():
+    token = secrets.token_hex(16)
+    with db() as conn:
+        conn.execute("UPDATE application_meta SET value=? WHERE key='extension_pairing_token'", (token,))
+    return {"token": token, "api_base": "http://127.0.0.1:8000"}
+
+
+@app.get("/api/publish/tasks")
+def publish_tasks_list(platform: str = "douyin"):
+    if platform != "douyin":
+        raise HTTPException(400, "暂不支持该发布平台")
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
+            "JOIN workflows ON workflows.id=publish_tasks.workflow_id "
+            "WHERE platform=? ORDER BY created_at DESC",
+            (platform,),
+        ).fetchall()
+    return [publish_task_row(row) for row in rows]
+
+
+@app.post("/api/publish/tasks", status_code=201)
+def publish_task_create(value: PublishTaskCreate):
+    with db() as conn:
+        workflow_record = conn.execute("SELECT * FROM workflows WHERE id=?", (value.workflow_id,)).fetchone()
+        if not workflow_record:
+            raise HTTPException(404, "作品不存在")
+        workflow = workflow_row(workflow_record)
+        videos = {asset.get("url") for asset in workflow.get("videos", []) if asset.get("url")}
+        cover_assets = {asset.get("url"): asset for asset in workflow.get("covers", []) if asset.get("url")}
+        video_url = value.video_url or next(iter(videos), "")
+        if not video_url:
+            raise HTTPException(422, "该作品还没有可发布的视频")
+        if video_url not in videos:
+            raise HTTPException(422, "视频不属于当前作品")
+        if any(cover_url not in cover_assets for cover_url in value.cover_urls):
+            raise HTTPException(422, "封面不属于当前作品")
+        selected_covers = [
+            {key: cover_assets[url].get(key, "") for key in ("url", "image_ratio", "resolution", "prompt_name")}
+            for url in value.cover_urls
+        ]
+        topics = value.topics or workflow.get("topics", [])
+        tags = workflow.get("tags", [])
+        cover_url = selected_covers[0]["url"] if selected_covers else ""
+        task_id, now = uuid.uuid4().hex[:16], int(time.time())
+        conn.execute(
+            "INSERT INTO publish_tasks(id,workflow_id,platform,status,title,description,tags,topics,video_url,cover_url,covers,created_at,updated_at,error) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, value.workflow_id, value.platform, "prepared", value.title.strip(), value.description.strip(),
+             json.dumps(tags, ensure_ascii=False), json.dumps(topics, ensure_ascii=False), video_url, cover_url,
+             json.dumps(selected_covers, ensure_ascii=False), now, now, ""),
+        )
+        row = conn.execute(
+            "SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
+            "JOIN workflows ON workflows.id=publish_tasks.workflow_id WHERE publish_tasks.id=?",
+            (task_id,),
+        ).fetchone()
+    return publish_task_row(row)
+
+
+@app.delete("/api/publish/tasks/{task_id}", status_code=204)
+def publish_task_delete(task_id: str):
+    with db() as conn:
+        result = conn.execute("DELETE FROM publish_tasks WHERE id=?", (task_id,))
+        if result.rowcount == 0:
+            raise HTTPException(404, "发布任务不存在")
+
+
+@app.get("/api/publish/extension/tasks/next")
+def publish_extension_next(platform: str = "douyin", task_id: str = "",
+                           x_storyforge_token: str | None = Header(default=None)):
+    require_extension_token(x_storyforge_token)
+    if platform != "douyin":
+        raise HTTPException(400, "暂不支持该发布平台")
+    with db() as conn:
+        statuses = "('prepared','filling','failed','ready')" if task_id else "('prepared','filling','ready')"
+        query = ("SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
+                 "JOIN workflows ON workflows.id=publish_tasks.workflow_id "
+                 f"WHERE platform=? AND publish_tasks.status IN {statuses}")
+        params: list[Any] = [platform]
+        if task_id:
+            query += " AND publish_tasks.id=?"; params.append(task_id)
+        query += " ORDER BY CASE WHEN publish_tasks.status='ready' THEN 1 ELSE 0 END,publish_tasks.created_at LIMIT 1"
+        row = conn.execute(query, params).fetchone()
+    return {"task": publish_task_row(row) if row else None}
+
+
+@app.get("/api/publish/extension/tasks/{task_id}/video")
+def publish_extension_video(task_id: str, x_storyforge_token: str | None = Header(default=None)):
+    require_extension_token(x_storyforge_token)
+    with db() as conn:
+        row = conn.execute("SELECT video_url FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "发布任务不存在")
+    prefix = "/media/"
+    if not row["video_url"].startswith(prefix):
+        raise HTTPException(422, "发布视频地址无效")
+    target = (MEDIA / row["video_url"][len(prefix):]).resolve()
+    media_root = MEDIA.resolve()
+    if media_root not in target.parents or not target.is_file():
+        raise HTTPException(404, "发布视频文件不存在")
+    return FileResponse(target, media_type="video/mp4", filename=target.name)
+
+
+@app.get("/api/publish/extension/tasks/{task_id}/cover")
+def publish_extension_cover(task_id: str, x_storyforge_token: str | None = Header(default=None)):
+    require_extension_token(x_storyforge_token)
+    with db() as conn:
+        row = conn.execute("SELECT cover_url FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "发布任务不存在")
+    prefix = "/media/"
+    if not row["cover_url"].startswith(prefix):
+        raise HTTPException(422, "发布封面地址无效")
+    target = (MEDIA / row["cover_url"][len(prefix):]).resolve()
+    media_root = MEDIA.resolve()
+    if media_root not in target.parents or not target.is_file():
+        raise HTTPException(404, "发布封面文件不存在")
+    return FileResponse(target, filename=target.name)
+
+
+@app.get("/api/publish/extension/tasks/{task_id}/covers/{cover_index}")
+def publish_extension_cover_by_index(task_id: str, cover_index: int,
+                                     x_storyforge_token: str | None = Header(default=None)):
+    require_extension_token(x_storyforge_token)
+    with db() as conn:
+        row = conn.execute("SELECT covers FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "发布任务不存在")
+    covers = json.loads(row["covers"] or "[]")
+    if cover_index < 0 or cover_index >= len(covers):
+        raise HTTPException(404, "发布封面不存在")
+    cover_url = covers[cover_index].get("url", "")
+    prefix = "/media/"
+    if not cover_url.startswith(prefix):
+        raise HTTPException(422, "发布封面地址无效")
+    target = (MEDIA / cover_url[len(prefix):]).resolve()
+    if MEDIA.resolve() not in target.parents or not target.is_file():
+        raise HTTPException(404, "发布封面文件不存在")
+    return FileResponse(target, filename=target.name)
+
+
+@app.put("/api/publish/extension/tasks/{task_id}")
+def publish_extension_update(task_id: str, value: PublishTaskStatusUpdate,
+                             x_storyforge_token: str | None = Header(default=None)):
+    require_extension_token(x_storyforge_token)
+    allowed_transitions = {
+        "prepared": {"filling", "failed"},
+        "filling": {"ready", "failed"},
+        "ready": {"completed", "failed"},
+        "failed": {"filling"},
+        "completed": set(),
+        "cancelled": set(),
+    }
+    with db() as conn:
+        current = conn.execute("SELECT status FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+        if not current:
+            raise HTTPException(404, "发布任务不存在")
+        if value.status not in allowed_transitions[current["status"]]:
+            raise HTTPException(409, f"不能从 {current['status']} 切换到 {value.status}")
+        conn.execute("UPDATE publish_tasks SET status=?,error=?,updated_at=? WHERE id=?",
+                     (value.status, value.error.strip(), int(time.time()), task_id))
+        row = conn.execute("SELECT * FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+    return publish_task_row(row)
+
+
 @app.get("/api/workflows")
 def workflows_list():
     with db() as conn:
@@ -925,7 +1216,7 @@ def create_workflow_record(book: BookCreate, options: WorkflowOptions) -> str:
                "background_music_volume": options.background_music_volume,
                "background_music_fade_in": options.background_music_fade_in,
                "background_music_fade_out": options.background_music_fade_out,
-               "description": "", "original_drafts": [], "polished_drafts": [], "covers": [], "audio": [], "videos": []}
+               "description": "", "tags": [], "topics": [], "original_drafts": [], "polished_drafts": [], "covers": [], "audio": [], "videos": []}
     with db() as conn:
         conn.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?,?,?)",
                      (wid, book.book_title, book.author, book.edition, "queued", 0, 0, now, now, json.dumps(payload, ensure_ascii=False)))

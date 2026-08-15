@@ -90,6 +90,16 @@ test("cover ratios are selected as prompts and generated images expose their met
   assert.match(css, /\.cover-gallery/);
 });
 
+test("workflow details expose generated tags and topics as a seven-step pipeline", () => {
+  assert.match(page, /"生成标签和话题"/);
+  assert.match(page, /task\.tags\?\.length/);
+  assert.match(page, /task\.topics\?\.length/);
+  assert.match(page, /<h3>标签和话题<\/h3>/);
+  assert.match(page, /标签话题生成/);
+  assert.match(css, /grid-template-columns:repeat\(7,1fr\)/);
+  assert.match(css, /\.taxonomy-panel/);
+});
+
 test("configuration and request logs use standalone sidebar pages", () => {
   assert.match(page, /className="side-nav"/);
   assert.match(page, />提示词库<\/button>/);
@@ -122,8 +132,8 @@ test("workspace supports compact mobile navigation and bulk list deletion", () =
   assert.match(page, /删除所选/);
   assert.match(page, /Promise\.all\(ids\.map\(id=>fetch/);
   assert.match(css, /\.app-shell\{grid-template-columns:196px/);
-  assert.match(css, /\.side-nav\{position:fixed;inset:auto 0 0 0/);
-  assert.match(css, /grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.side-nav\{position:fixed;inset:auto 0(?: 0 0)?/);
+  assert.match(css, /grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
 });
 
 test("cover prompt requires at least one image size", () => {
