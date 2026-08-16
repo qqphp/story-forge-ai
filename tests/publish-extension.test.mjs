@@ -35,6 +35,7 @@ test("extension supports all configured creator platforms without cookie access"
   assert.deepEqual(manifest.content_scripts[0].matches, ["https://creator.douyin.com/*"]);
   assert.deepEqual(manifest.content_scripts[0].js, ["platforms.js", "cover-upload.js", "editor-caret.js", "content.js"]);
   assert.deepEqual(manifest.content_scripts[1].matches, ["https://cp.kuaishou.com/*", "https://member.bilibili.com/*", "https://creator.xiaohongshu.com/*", "https://baijiahao.baidu.com/*"]);
+  assert.deepEqual(manifest.content_scripts[1].js, ["platforms.js", "cover-upload.js", "multi-platform.js"]);
   assert.match(platforms, /baijiahao/);
   assert.match(multiPlatform, /不会自动点击最终发布按钮/);
   assert.match(multiPlatform, /attachVideo/);
@@ -67,6 +68,45 @@ test("kuaishou fills only description and topics, then uploads one 3:4 cover", (
   assert.match(page, /快手视频发布使用一张3:4的图片即可，需要勾选3:4图片尺寸。/);
   assert.match(page, /const requiresTitle=targets\.some\(platform=>platform!=="kuaishou"\)/);
   assert.match(backend, /value\.platform in \{"douyin", "kuaishou"\}/);
+});
+
+test("bilibili fills description and at most ten confirmed tags", () => {
+  assert.match(page, />标签</);
+  assert.match(page, />标签[^<]*<small>[^<]*<\/small><input[^>]*>[\s\S]*?<\/label><p className="publish-topic-hint">哔哩哔哩平台最多支持10个标签。<\/p><label>话题/);
+  assert.match(multiPlatform, /bilibiliDescriptionField/);
+  assert.match(multiPlatform, /\.ql-editor/);
+  assert.match(multiPlatform, /#tag-container/);
+  assert.match(multiPlatform, /task\.tags[^;]*slice\(0,10\)/);
+  assert.match(multiPlatform, /label-item-v2-container/);
+  assert.match(multiPlatform, /await clearBilibiliTags\(\);await new Promise\(resolve=>setTimeout\(resolve,2000\)\)/);
+  assert.match(multiPlatform, /new KeyboardEvent\("keydown",\{[^}]*key:"Enter"/);
+});
+
+test("bilibili uploads matching covers without opening the system file picker", () => {
+  assert.match(multiPlatform, /bilibiliCovers/);
+  assert.match(multiPlatform, /ratio:"4:3",label:"首页推荐封面（4:3）"/);
+  assert.match(multiPlatform, /ratio:"16:9",label:"个人空间封面（16:9）"/);
+  assert.match(multiPlatform, /"4:3":"\.editor_4_3","16:9":"\.editor_16_9"/);
+  assert.match(multiPlatform, /closest\("\.active,\.inactive"\)/);
+  assert.match(multiPlatform, /await waitFor\(\(\)=>region\.closest\("\.active,\.inactive"\)\?\.classList\.contains\("active"\)/);
+  assert.match(multiPlatform, /captureBilibiliImageInput/);
+  assert.match(multiPlatform, /event\.preventDefault\(\);event\.stopImmediatePropagation\(\)/);
+  assert.match(multiPlatform, /assignFile\(input,await fetchFile/);
+  assert.match(multiPlatform, /await uploadBilibiliCover\(dialog,home,uploaded,skipped\);if\(uploaded\.includes\("4:3"\)\)await new Promise\(resolve=>setTimeout\(resolve,2000\)\);await uploadBilibiliCover\(dialog,space,uploaded,skipped\)/);
+  assert.match(multiPlatform, /exactTextElements\("完成",dialog\)/);
+});
+
+test("bilibili cover activation targets the cropper canvas with a real pointer sequence", () => {
+  const events=[];
+  const section={classList:{active:false,contains(name){return name==="active"&&this.active;}}};
+  const target={dispatchEvent(event){events.push(event.type);if(event.type==="mousedown")section.classList.active=true;return true;}};
+  const region={querySelector(selector){return selector===".upper-canvas"?target:null;},closest(){return section;}};
+  class TestEvent {constructor(type,options){this.type=type;Object.assign(this,options);}}
+  const context={MouseEvent:TestEvent,PointerEvent:TestEvent};
+  vm.runInNewContext(coverUpload,context);
+  assert.equal(context.StoryForgeCoverUpload.activateBilibiliCoverRegion(region),true);
+  assert.deepEqual(events,["pointerdown","mousedown","pointerup","mouseup","click"]);
+  assert.equal(section.classList.contains("active"),true);
 });
 
 test("first topic insertion targets the final text node of the description", () => {

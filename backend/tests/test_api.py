@@ -418,7 +418,8 @@ class StoryForgeApiTests(unittest.TestCase):
             created_platform_task = self.client.post("/api/publish/tasks", json={
                 "workflow_id": workflow_id, "platform": platform,
                 **({} if platform == "kuaishou" else {"title": "一本值得读的书"}),
-                "description": "这是作品简介", "topics": ["读书", "好书推荐", "名著解读", "读书分享", "经典文学", "文学阅读"], "video_url": video_url,
+                "description": "这是作品简介", "tags": [f"标签{i}" for i in range(1, 11)],
+                "topics": ["读书", "好书推荐", "名著解读", "读书分享", "经典文学", "文学阅读"], "video_url": video_url,
                 "cover_urls": [cover_url if platform == "kuaishou" else square_cover_url],
             })
             self.assertEqual(created_platform_task.status_code, 201)
@@ -427,6 +428,8 @@ class StoryForgeApiTests(unittest.TestCase):
             if platform == "kuaishou":
                 self.assertEqual(platform_task["title"], "")
                 self.assertEqual(platform_task["topics"], ["读书", "好书推荐", "名著解读", "读书分享"])
+            if platform == "bilibili":
+                self.assertEqual(platform_task["tags"], [f"标签{i}" for i in range(1, 11)])
             self.assertEqual(self.client.get("/api/publish/tasks", params={"platform": platform}).json()[0]["id"], platform_task["id"])
             self.assertEqual(self.client.get("/api/publish/extension/tasks/next", params={"platform": platform}, headers=headers).json()["task"]["id"], platform_task["id"])
         extension_zip = self.client.get("/api/publish/extension/download")

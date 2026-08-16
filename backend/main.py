@@ -275,6 +275,7 @@ class PublishTaskCreate(BaseModel):
     platform: str = Field(default="douyin", pattern="^(douyin|kuaishou|bilibili|xiaohongshu|baijiahao)$")
     title: str = Field(default="", max_length=100)
     description: str = Field(default="", max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=10)
     topics: list[str] = Field(default_factory=list, max_length=10)
     video_url: str = Field(default="", max_length=1000)
     cover_urls: list[str] = Field(default_factory=list, max_length=20)
@@ -286,6 +287,15 @@ class PublishTaskCreate(BaseModel):
         cleaned = [value for value in cleaned if value]
         if any(len(value) > 30 for value in cleaned):
             raise ValueError("单个话题不能超过30个字符")
+        return list(dict.fromkeys(cleaned))
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip().lstrip("#").strip() for value in values]
+        cleaned = [value for value in cleaned if value]
+        if any(len(value) > 20 for value in cleaned):
+            raise ValueError("单个标签不能超过20个字符")
         return list(dict.fromkeys(cleaned))
 
     @field_validator("cover_urls")
@@ -1093,7 +1103,9 @@ def publish_task_create(value: PublishTaskCreate):
         topic_limit = {"kuaishou": 4, "douyin": 5}.get(value.platform)
         if topic_limit is not None:
             topics = topics[:topic_limit]
-        tags = workflow.get("tags", [])
+        tags = value.tags or workflow.get("tags", [])
+        if value.platform == "bilibili":
+            tags = tags[:10]
         cover_url = selected_covers[0]["url"] if selected_covers else ""
         task_id, now = uuid.uuid4().hex[:16], int(time.time())
         conn.execute(

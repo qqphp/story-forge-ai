@@ -26,7 +26,7 @@
     },
     {
       "matches": ["https://cp.kuaishou.com/*", "https://member.bilibili.com/*", "https://creator.xiaohongshu.com/*", "https://baijiahao.baidu.com/*"],
-      "js": ["platforms.js", "multi-platform.js"],
+      "js": ["platforms.js", "cover-upload.js", "multi-platform.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }
