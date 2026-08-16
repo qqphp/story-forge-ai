@@ -90,7 +90,7 @@
     const previousImageInputs=new Set([...document.querySelectorAll('input[type="file"]')].filter(input=>/image|png|jpe?g/i.test(input.accept||"")));uploadButton.click();
     const input=await waitFor(()=>{const imageInputs=[...document.querySelectorAll('input[type="file"]')].filter(candidate=>/image|png|jpe?g/i.test(candidate.accept||""));const triggerInputs=imageInputsNear(uploadButton,dialog);return StoryForgeCoverUpload.pickImageInput({allInputs:imageInputs,triggerInputs,previousInputs:previousImageInputs})},10000);
     if(!input)throw new Error("已点击“上传封面”，但没有识别到抖音的图片上传控件")
-    assignFile(input,file);await new Promise(resolve=>setTimeout(resolve,6000));
+    assignFile(input,file);await new Promise(resolve=>setTimeout(resolve,3000));
     let confirmButton=null;for(const label of ["完成","确定","确认","保存"]){const buttons=exactTextElements(label,dialog);confirmButton=buttons.find(element=>element.tagName==="BUTTON")||buttons[0]||null;if(confirmButton)break}
     if(!confirmButton)throw new Error(`已上传${cover.image_ratio}封面，但没有找到封面弹窗的“完成”按钮`)
     confirmButton.click();const dialogClosed=await waitFor(()=>!document.contains(dialog),15000);if(!dialogClosed)throw new Error(`${cover.image_ratio}封面设置弹窗没有关闭，已停止上传下一张封面`)

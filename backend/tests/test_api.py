@@ -143,7 +143,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(listing["total"], 1)
         self.assertEqual(listing["items"][0]["request_params"]["messages"][0]["content"], "生成话题")
 
-    def test_new_workflow_generates_six_tags_and_topics_before_covers(self):
+    def test_new_workflow_generates_five_tags_and_topics_before_covers(self):
         with patch.object(main, "process_workflow"):
             created = self.client.post("/api/workflows", json={"book_title": "西游记"})
         workflow_id = created.json()["id"]
@@ -176,8 +176,8 @@ class StoryForgeApiTests(unittest.TestCase):
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["step"], 7)
         self.assertEqual(workflow["status"], "completed")
-        self.assertEqual(len(workflow["tags"]), 6)
-        self.assertEqual(len(workflow["topics"]), 6)
+        self.assertEqual(len(workflow["tags"]), 5)
+        self.assertEqual(len(workflow["topics"]), 5)
         self.assertEqual(workflow["topics"][0], "西游记")
         self.assertTrue(workflow["covers"])
 

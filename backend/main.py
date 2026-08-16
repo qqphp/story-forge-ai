@@ -445,7 +445,7 @@ def generated_taxonomy(raw: str | None, title: str) -> tuple[list[str], list[str
         source = values if isinstance(values, list) else []
         terms = [str(value).strip().lstrip("#").strip().replace(" ", "") for value in source]
         terms.extend(fallbacks)
-        return [value for value in dict.fromkeys(terms) if value and len(value) <= 30][:6]
+        return [value for value in dict.fromkeys(terms) if value and len(value) <= 30][:5]
 
     parsed: dict[str, Any] = {}
     if raw:
@@ -698,7 +698,7 @@ async def process_workflow(wid: str) -> None:
 
         share_text = "\n\n---\n\n".join(draft["text"] for draft in polished)
         taxonomy_raw = await llm([
-            {"role": "system", "content": "你是中文内容运营编辑。根据给定书籍信息与分享稿生成内容分类。只输出严格JSON，不要Markdown：{\"tags\":[6个简短标签],\"topics\":[6个适合短视频平台的话题词]}。每项不带#，不含空格，不超过15个汉字，去重并与内容高度相关。"},
+            {"role": "system", "content": "你是中文内容运营编辑。根据给定书籍信息与分享稿生成内容分类。只输出严格JSON，不要Markdown：{\"tags\":[5个简短标签],\"topics\":[5个适合短视频平台的话题词]}。每项不带#，不含空格，不超过15个汉字，去重并与内容高度相关。"},
             {"role": "user", "content": f"书籍标题：{title}\n书籍简介：{description}\n分享稿：\n{share_text}"},
         ], settings, "标签话题生成")
         if wid in DELETING_WORKFLOWS: return

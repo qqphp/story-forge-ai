@@ -69,7 +69,7 @@ test("extension opens the ratio cover card before the modal upload control", () 
   assert.match(content, /设置\$\{orientation\}封面/);
   assert.match(content, /const uploadButton=exactTextElements\("上传封面",dialog\)\.at\(-1\)/);
   assert.match(content, /imageInputsNear\(uploadButton,dialog\)/);
-  assert.match(content, /assignFile\(input,file\);await new Promise\(resolve=>setTimeout\(resolve,6000\)\)/);
+  assert.match(content, /assignFile\(input,file\);await new Promise\(resolve=>setTimeout\(resolve,3000\)\)/);
 });
 
 test("each cover upload ignores file inputs left by the previous cover dialog", () => {
