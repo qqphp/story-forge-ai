@@ -358,6 +358,7 @@ class StoryForgeApiTests(unittest.TestCase):
         video_url = f"/media/{workflow['output_dir']}/video-1.mp4"
         cover_url = f"/media/{workflow['output_dir']}/cover-1.png"
         horizontal_cover_url = f"/media/{workflow['output_dir']}/cover-2.png"
+        square_cover_url = f"/media/{workflow['output_dir']}/cover-3.png"
         (main.MEDIA / workflow["output_dir"] / "video-1.mp4").write_bytes(b"test-video")
         (main.MEDIA / workflow["output_dir"] / "cover-1.png").write_bytes(b"test-cover")
         (main.MEDIA / workflow["output_dir"] / "cover-2.png").write_bytes(b"horizontal-cover")
@@ -367,7 +368,7 @@ class StoryForgeApiTests(unittest.TestCase):
             payload.update(
                 videos=[{"url": video_url}], tags=["文学名著", "人物成长"],
                 topics=["读书", "好书推荐"],
-                covers=[{"url": cover_url, "image_ratio": "3:4"}, {"url": horizontal_cover_url, "image_ratio": "4:3"}],
+                covers=[{"url": cover_url, "image_ratio": "3:4"}, {"url": horizontal_cover_url, "image_ratio": "4:3"}, {"url": square_cover_url, "image_ratio": "1:1"}],
             )
             conn.execute("UPDATE workflows SET status='completed',payload=? WHERE id=?",
                          (main.json.dumps(payload, ensure_ascii=False), workflow_id))
@@ -382,6 +383,12 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(task["tags"], ["文学名著", "人物成长"])
         self.assertEqual(task["topics"], ["读书", "好书推荐"])
         self.assertEqual([cover["image_ratio"] for cover in task["covers"]], ["3:4", "4:3"])
+        unsupported = self.client.post("/api/publish/tasks", json={
+            "workflow_id": workflow_id, "title": "不裁剪方图", "video_url": video_url,
+            "cover_urls": [square_cover_url],
+        })
+        self.assertEqual(unsupported.status_code, 422)
+        self.assertIn("原图直传3:4或4:3", unsupported.json()["detail"])
         pairing = self.client.get("/api/publish/pairing").json()
         self.assertEqual(self.client.get("/api/publish/extension/tasks/next").status_code, 401)
         headers = {"X-StoryForge-Token": pairing["token"]}

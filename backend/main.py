@@ -1037,6 +1037,9 @@ def publish_task_create(value: PublishTaskCreate):
             {key: cover_assets[url].get(key, "") for key in ("url", "image_ratio", "resolution", "prompt_name")}
             for url in value.cover_urls
         ]
+        unsupported_ratios = [cover["image_ratio"] or "未记录" for cover in selected_covers if cover["image_ratio"] not in {"3:4", "4:3"}]
+        if unsupported_ratios:
+            raise HTTPException(422, f"抖音封面只支持原图直传3:4或4:3，不能使用：{', '.join(unsupported_ratios)}")
         topics = value.topics or workflow.get("topics", [])
         tags = workflow.get("tags", [])
         cover_url = selected_covers[0]["url"] if selected_covers else ""

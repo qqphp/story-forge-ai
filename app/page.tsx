@@ -166,7 +166,8 @@ function PublishCenterPage({connected,workflows,onToast}:{connected:boolean;work
   const eligible=useMemo(()=>workflows.filter(workflow=>workflow.status==="completed"&&(workflow.videos?.length||0)>0),[workflows]);
   const [workflowId,setWorkflowId]=useState(""); const [title,setTitle]=useState(""); const [description,setDescription]=useState(""); const [topics,setTopics]=useState("");
   const [videoUrl,setVideoUrl]=useState(""); const [coverUrls,setCoverUrls]=useState<string[]>([]); const [tasks,setTasks]=useState<PublishTask[]>([]); const [pairingToken,setPairingToken]=useState(""); const [saving,setSaving]=useState(false);
-  const selectedWorkflow=eligible.find(workflow=>workflow.id===workflowId);
+  const selectedWorkflowRecord=eligible.find(workflow=>workflow.id===workflowId);
+  const selectedWorkflow=selectedWorkflowRecord?{...selectedWorkflowRecord,covers:(selectedWorkflowRecord.covers||[]).filter(asset=>asset.image_ratio==="3:4"||asset.image_ratio==="4:3")}:undefined;
   const load=useCallback(async()=>{if(!connected){setTasks([]);setPairingToken("");return;}const [taskResponse,pairingResponse]=await Promise.all([fetch(`${API}/api/publish/tasks?platform=douyin`),fetch(`${API}/api/publish/pairing`)]);if(taskResponse.ok)setTasks(await taskResponse.json());if(pairingResponse.ok)setPairingToken((await pairingResponse.json()).token)},[connected]);
   useEffect(()=>{const initial=window.setTimeout(()=>{void load()},0);const timer=window.setInterval(()=>{void load()},3000);return()=>{window.clearTimeout(initial);window.clearInterval(timer)}},[load]);
   const applyWorkflow=useCallback((workflow:Workflow)=>{setWorkflowId(workflow.id);setTitle(`《${workflow.book_title}》读书分享`);setDescription(workflow.description||"");setTopics((workflow.topics||[]).join(", "));setVideoUrl(workflow.videos?.[0]?.url||"");setCoverUrls((workflow.covers||[]).filter(asset=>asset.image_ratio==="3:4"||asset.image_ratio==="4:3").map(asset=>asset.url))},[]);
