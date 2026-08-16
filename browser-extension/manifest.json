@@ -16,7 +16,7 @@
   "content_scripts": [
     {
       "matches": ["https://creator.douyin.com/*"],
-      "js": ["cover-upload.js", "content.js"],
+      "js": ["cover-upload.js", "editor-caret.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

@@ -1,4 +1,4 @@
-/* global chrome, StoryForgeCoverUpload */
+/* global chrome, StoryForgeCoverUpload, StoryForgeEditorCaret */
 (async()=>{
   if(document.querySelector("#storyforge-publish-assistant"))return;
   const settings=await chrome.storage.local.get(["apiBase","storyForgeToken"]);
@@ -50,8 +50,6 @@
     if(element instanceof HTMLInputElement||element instanceof HTMLTextAreaElement){const prototype=element instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;const setter=Object.getOwnPropertyDescriptor(prototype,"value")?.set;setter?.call(element,value)}else{element.textContent=value}
     element.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"insertText",data:value}));element.dispatchEvent(new Event("change",{bubbles:true}));element.blur();
   }
-  function placeCaretAtEnd(element){element.focus();const selection=getSelection();if(!selection)return;const range=document.createRange();range.selectNodeContents(element);range.collapse(false);selection.removeAllRanges();selection.addRange(range)}
-  function insertEditorText(element,value){placeCaretAtEnd(element);document.execCommand("insertText",false,value);element.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"insertText",data:value}))}
   async function waitFor(finder,timeout=60000){const started=Date.now();while(Date.now()-started<timeout){const value=finder();if(value)return value;await new Promise(resolve=>setTimeout(resolve,800))}return null}
   async function attachVideo(){
     showMessage("正在读取本机视频并等待抖音上传控件…");
@@ -63,9 +61,8 @@
     const added=[];const failed=[];
     for(const rawTag of task.topics||[]){
       const tag=String(rawTag).replace(/^#+/,"").trim().replace(/\s+/g,"");if(!tag)continue;
-      placeCaretAtEnd(descriptionField);const existing=new Set(exactTextElements(`#${tag}`));
-      if(!clickExactText("#添加话题")){failed.push(tag);continue}
-      await new Promise(resolve=>setTimeout(resolve,250));insertEditorText(descriptionField,tag);
+      const existing=new Set(exactTextElements(`#${tag}`));
+      if(!StoryForgeEditorCaret.insertTopic(descriptionField,tag)){failed.push(tag);continue}
       const suggestion=await waitFor(()=>exactTextElements(`#${tag}`).find(element=>!existing.has(element)&&!descriptionField.contains(element)),6000);
       if(suggestion){suggestion.click();added.push(tag);await new Promise(resolve=>setTimeout(resolve,350))}else{failed.push(tag)}
     }

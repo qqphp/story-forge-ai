@@ -9,6 +9,7 @@ const backend = readFileSync(new URL("../backend/main.py", import.meta.url), "ut
 const manifest = JSON.parse(readFileSync(new URL("../browser-extension/manifest.json", import.meta.url), "utf8"));
 const content = readFileSync(new URL("../browser-extension/content.js", import.meta.url), "utf8");
 const coverUpload = readFileSync(new URL("../browser-extension/cover-upload.js", import.meta.url), "utf8");
+const editorCaret = readFileSync(new URL("../browser-extension/editor-caret.js", import.meta.url), "utf8");
 
 test("publishing center prepares local Douyin tasks", () => {
   assert.match(page, />发布中心<\/button>/);
@@ -32,8 +33,38 @@ test("extension is scoped to local StoryForge and Douyin creator", () => {
   assert.deepEqual(manifest.permissions.sort(), ["storage", "tabs"]);
   assert.ok(!manifest.permissions.includes("cookies"));
   assert.deepEqual(manifest.content_scripts[0].matches, ["https://creator.douyin.com/*"]);
-  assert.deepEqual(manifest.content_scripts[0].js, ["cover-upload.js", "content.js"]);
+  assert.deepEqual(manifest.content_scripts[0].js, ["cover-upload.js", "editor-caret.js", "content.js"]);
   assert.ok(manifest.host_permissions.includes("http://127.0.0.1:8000/*"));
+});
+
+test("first topic insertion targets the final text node of the description", () => {
+  const selection={removeAllRanges(){},addRange(range){this.range=range;}};
+  const range={selectNodeContents(node){this.selectedNode=node;},setStart(node,offset){this.startContainer=node;this.startOffset=offset;},collapse(){}};
+  const finalText={nodeType:3,nodeValue:"作品简介的最后一句"};
+  const description={focus(){this.focused=true;},dispatchEvent(){},childNodes:[{nodeType:3,nodeValue:"《西游记》"},finalText]};
+  const context={
+    getSelection:()=>selection,
+    document:{createRange:()=>range,execCommand(){return true;}},
+    InputEvent:class InputEvent{},
+  };
+  vm.runInNewContext(editorCaret,context);
+  context.StoryForgeEditorCaret.insertText(description,"再读西游记");
+  assert.equal(selection.range.startContainer,finalText);
+  assert.equal(selection.range.startOffset,finalText.nodeValue.length);
+});
+
+test("topic marker is appended with its first topic instead of preceding the description", () => {
+  const selection={removeAllRanges(){},addRange(){}};
+  const finalText={nodeType:3,nodeValue:"作品简介"};
+  const description={textContent:"作品简介",focus(){},dispatchEvent(){},childNodes:[finalText]};
+  const context={
+    getSelection:()=>selection,
+    document:{createRange:()=>({selectNodeContents(){},setStart(){},collapse(){}}),execCommand(_command,_ui,value){description.textContent+=value;return true;}},
+    InputEvent:class InputEvent{},
+  };
+  vm.runInNewContext(editorCaret,context);
+  context.StoryForgeEditorCaret.insertTopic(description,"再读西游记");
+  assert.equal(description.textContent,"作品简介#再读西游记");
 });
 
 test("extension uploads and fills but preserves final user confirmation", () => {
@@ -49,7 +80,7 @@ test("extension uploads and fills but preserves final user confirmation", () => 
   assert.match(content, /new File\(\[blob\],filename/);
   assert.doesNotMatch(content, /drawImage|toBlob|OffscreenCanvas|createElement\("canvas"\)/);
   assert.match(content, /fillTopics/);
-  assert.match(content, /#添加话题/);
+  assert.match(content, /StoryForgeEditorCaret\.insertTopic\(descriptionField,tag\)/);
   assert.doesNotMatch(content, /topicText=.*join\(" "\)/);
   assert.match(content, /findField\("title"\)/);
   assert.match(content, /findField\("description"\)/);
