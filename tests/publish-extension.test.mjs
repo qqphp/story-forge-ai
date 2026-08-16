@@ -46,8 +46,11 @@ test("kuaishou fills only description and topics, then uploads one 3:4 cover", (
   assert.match(multiPlatform, /\[contenteditable='true'\]\[placeholder\*='描述'\]/);
   assert.match(multiPlatform, /#work-description-edit/);
   assert.match(multiPlatform, /appendKuaishouTopics/);
-  assert.match(multiPlatform, /const text=`#\$\{tag\} `;/);
-  assert.match(multiPlatform, /setTimeout\(resolve,500\)/);
+  assert.match(multiPlatform, /const text=` #\$\{tag\} `;/);
+  assert.match(multiPlatform, /new KeyboardEvent\("keydown"/);
+  assert.match(multiPlatform, /new InputEvent\("beforeinput"/);
+  assert.match(multiPlatform, /setTimeout\(resolve,35\)/);
+  assert.match(multiPlatform, /setTimeout\(resolve,700\)/);
   assert.match(multiPlatform, /\[class\*='_cover-full-editor_'\]/);
   assert.match(multiPlatform, /\[class\*='_header-title-item_'\]/);
   assert.match(multiPlatform, /\[class\*='_ratio-item_'\]/);
