@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import hashlib
 import html
 import json
@@ -15,6 +16,7 @@ import subprocess
 import time
 import uuid
 import wave
+import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -24,13 +26,14 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+PUBLISH_PLATFORMS = ("douyin", "kuaishou", "bilibili", "xiaohongshu", "baijiahao")
 load_dotenv(ROOT / ".env", override=False)
 DATA = ROOT / "data"
 MEDIA = DATA / "media"
@@ -90,7 +93,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS publish_tasks (
               id TEXT PRIMARY KEY,
               workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-              platform TEXT NOT NULL CHECK(platform IN ('douyin')),
+              platform TEXT NOT NULL CHECK(platform IN ('douyin','kuaishou','bilibili','xiaohongshu','baijiahao')),
               status TEXT NOT NULL CHECK(status IN ('prepared','filling','ready','completed','failed','cancelled')),
               title TEXT NOT NULL, description TEXT NOT NULL, tags TEXT NOT NULL,
               topics TEXT NOT NULL DEFAULT '[]', video_url TEXT NOT NULL,
@@ -112,6 +115,24 @@ def init_db() -> None:
             conn.execute("ALTER TABLE publish_tasks ADD COLUMN topics TEXT NOT NULL DEFAULT '[]'")
         if "covers" not in publish_columns:
             conn.execute("ALTER TABLE publish_tasks ADD COLUMN covers TEXT NOT NULL DEFAULT '[]'")
+        publish_schema = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='publish_tasks'").fetchone()["sql"]
+        if "kuaishou" not in publish_schema:
+            conn.execute("DROP INDEX IF EXISTS idx_publish_tasks_platform_status_created")
+            conn.execute("ALTER TABLE publish_tasks RENAME TO publish_tasks_legacy")
+            conn.execute("""CREATE TABLE publish_tasks (
+              id TEXT PRIMARY KEY,
+              workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+              platform TEXT NOT NULL CHECK(platform IN ('douyin','kuaishou','bilibili','xiaohongshu','baijiahao')),
+              status TEXT NOT NULL CHECK(status IN ('prepared','filling','ready','completed','failed','cancelled')),
+              title TEXT NOT NULL, description TEXT NOT NULL, tags TEXT NOT NULL,
+              topics TEXT NOT NULL DEFAULT '[]', video_url TEXT NOT NULL,
+              cover_url TEXT NOT NULL DEFAULT '', covers TEXT NOT NULL DEFAULT '[]',
+              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+              error TEXT NOT NULL DEFAULT ''
+            )""")
+            conn.execute("INSERT INTO publish_tasks SELECT * FROM publish_tasks_legacy")
+            conn.execute("DROP TABLE publish_tasks_legacy")
+            conn.execute("CREATE INDEX idx_publish_tasks_platform_status_created ON publish_tasks(platform, status, created_at)")
         count = conn.execute("SELECT COUNT(*) AS count FROM prompt_templates").fetchone()["count"]
         if count == 0:
             now = int(time.time())
@@ -151,7 +172,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="StoryForge AI", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://creator.douyin.com"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://creator.douyin.com", "https://cp.kuaishou.com", "https://member.bilibili.com", "https://creator.xiaohongshu.com", "https://baijiahao.baidu.com"],
     allow_origin_regex=r"chrome-extension://[a-p]{32}",
     allow_credentials=True,
     allow_methods=["*"],
@@ -251,7 +272,7 @@ class SettingsPayload(BaseModel):
 
 class PublishTaskCreate(BaseModel):
     workflow_id: str = Field(min_length=1, max_length=40)
-    platform: str = Field(default="douyin", pattern="^douyin$")
+    platform: str = Field(default="douyin", pattern="^(douyin|kuaishou|bilibili|xiaohongshu|baijiahao)$")
     title: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=2000)
     topics: list[str] = Field(default_factory=list, max_length=10)
@@ -329,10 +350,21 @@ def workflow_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def publish_task_row(row: sqlite3.Row) -> dict[str, Any]:
+    def decode_list(value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            return []
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return decoded if isinstance(decoded, list) else []
+
     result = dict(row)
-    result["tags"] = json.loads(result["tags"])
-    result["topics"] = json.loads(result.get("topics") or "[]")
-    result["covers"] = json.loads(result.get("covers") or "[]")
+    result["tags"] = decode_list(result.get("tags"))
+    result["topics"] = decode_list(result.get("topics"))
+    result["covers"] = decode_list(result.get("covers"))
     return result
 
 
@@ -1003,17 +1035,31 @@ def publish_pairing_rotate():
     return {"token": token, "api_base": "http://127.0.0.1:8000"}
 
 
+@app.get("/api/publish/extension/download")
+def publish_extension_download():
+    extension_root = ROOT / "browser-extension"
+    if not extension_root.is_dir():
+        raise HTTPException(404, "浏览器扩展目录不存在")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+        for source in extension_root.rglob("*"):
+            if source.is_file() and "__pycache__" not in source.parts:
+                bundle.write(source, source.relative_to(ROOT))
+    archive.seek(0)
+    return StreamingResponse(archive, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="storyforge-publish-assistant.zip"'})
+
+
 @app.get("/api/publish/tasks")
-def publish_tasks_list(platform: str = "douyin"):
-    if platform != "douyin":
-        raise HTTPException(400, "暂不支持该发布平台")
+def publish_tasks_list(platform: str = ""):
+    if platform and platform not in PUBLISH_PLATFORMS:
+        raise HTTPException(400, "不支持该发布平台")
     with db() as conn:
-        rows = conn.execute(
-            "SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
-            "JOIN workflows ON workflows.id=publish_tasks.workflow_id "
-            "WHERE platform=? ORDER BY created_at DESC",
-            (platform,),
-        ).fetchall()
+        query = ("SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
+                 "JOIN workflows ON workflows.id=publish_tasks.workflow_id ")
+        params: tuple[str, ...] = ()
+        if platform:
+            query += "WHERE platform=? "; params = (platform,)
+        rows = conn.execute(query + "ORDER BY created_at DESC", params).fetchall()
     return [publish_task_row(row) for row in rows]
 
 
@@ -1038,7 +1084,7 @@ def publish_task_create(value: PublishTaskCreate):
             for url in value.cover_urls
         ]
         unsupported_ratios = [cover["image_ratio"] or "未记录" for cover in selected_covers if cover["image_ratio"] not in {"3:4", "4:3"}]
-        if unsupported_ratios:
+        if value.platform == "douyin" and unsupported_ratios:
             raise HTTPException(422, f"抖音封面只支持原图直传3:4或4:3，不能使用：{', '.join(unsupported_ratios)}")
         topics = value.topics or workflow.get("topics", [])
         tags = workflow.get("tags", [])
@@ -1071,8 +1117,8 @@ def publish_task_delete(task_id: str):
 def publish_extension_next(platform: str = "douyin", task_id: str = "",
                            x_storyforge_token: str | None = Header(default=None)):
     require_extension_token(x_storyforge_token)
-    if platform != "douyin":
-        raise HTTPException(400, "暂不支持该发布平台")
+    if platform not in PUBLISH_PLATFORMS:
+        raise HTTPException(400, "不支持该发布平台")
     with db() as conn:
         statuses = "('prepared','filling','failed','ready')" if task_id else "('prepared','filling','ready')"
         query = ("SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "

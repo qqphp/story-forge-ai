@@ -10,30 +10,34 @@ const manifest = JSON.parse(readFileSync(new URL("../browser-extension/manifest.
 const content = readFileSync(new URL("../browser-extension/content.js", import.meta.url), "utf8");
 const coverUpload = readFileSync(new URL("../browser-extension/cover-upload.js", import.meta.url), "utf8");
 const editorCaret = readFileSync(new URL("../browser-extension/editor-caret.js", import.meta.url), "utf8");
+const platforms = readFileSync(new URL("../browser-extension/platforms.js", import.meta.url), "utf8");
+const multiPlatform = readFileSync(new URL("../browser-extension/multi-platform.js", import.meta.url), "utf8");
 
-test("publishing center prepares local Douyin tasks", () => {
+test("publishing center prepares independent multi-platform tasks", () => {
   assert.match(page, />发布中心<\/button>/);
-  assert.match(page, /function PublishCenterPage/);
+  assert.match(page, /function MultiPublishCenterPage/);
   assert.match(page, /\/api\/publish\/tasks/);
   assert.match(page, /\/api\/publish\/pairing/);
-  assert.match(page, /creator\.douyin\.com\/creator-micro\/content\/upload/);
+  for(const platform of ["douyin","kuaishou","bilibili","xiaohongshu","baijiahao"])assert.match(page,new RegExp(`id:\"${platform}\"`));
   assert.match(css, /\.publish-center/);
   assert.match(page, /作品简介/);
-  assert.match(page, /workflow\.description\|\|""/);
-  assert.match(page, /workflow\.topics\|\|\[\]/);
+  assert.match(page, /className="publish-destinations"/);
   assert.match(page, /className="publish-cover-picker"/);
-  assert.match(page, /selectedWorkflowRecord\.covers\|\|\[\]/);
-  assert.match(page, /抖音默认竖封面 3:4、横封面 4:3/);
+  assert.match(page, /下载浏览器扩展 ZIP/);
   assert.match(page, /cover_urls:coverUrls/);
   assert.match(page, /topics:topics\.split/);
 });
 
-test("extension is scoped to local StoryForge and Douyin creator", () => {
+test("extension supports all configured creator platforms without cookie access", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.deepEqual(manifest.permissions.sort(), ["storage", "tabs"]);
   assert.ok(!manifest.permissions.includes("cookies"));
   assert.deepEqual(manifest.content_scripts[0].matches, ["https://creator.douyin.com/*"]);
-  assert.deepEqual(manifest.content_scripts[0].js, ["cover-upload.js", "editor-caret.js", "content.js"]);
+  assert.deepEqual(manifest.content_scripts[0].js, ["platforms.js", "cover-upload.js", "editor-caret.js", "content.js"]);
+  assert.deepEqual(manifest.content_scripts[1].matches, ["https://cp.kuaishou.com/*", "https://member.bilibili.com/*", "https://creator.xiaohongshu.com/*", "https://baijiahao.baidu.com/*"]);
+  assert.match(platforms, /baijiahao/);
+  assert.match(multiPlatform, /不会自动点击最终发布按钮/);
+  assert.match(multiPlatform, /attachVideo/);
   assert.ok(manifest.host_permissions.includes("http://127.0.0.1:8000/*"));
 });
 

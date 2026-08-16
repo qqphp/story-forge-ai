@@ -1,22 +1,32 @@
 {
   "manifest_version": 3,
-  "name": "砚界 · 抖音发布助手",
+  "name": "砚界 · 多平台发布助手",
   "version": "0.1.0",
   "description": "连接本机 StoryForge，在抖音创作页上传视频并辅助填写发布信息。",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
-    "https://creator.douyin.com/*"
+    "https://creator.douyin.com/*",
+    "https://cp.kuaishou.com/*",
+    "https://member.bilibili.com/*",
+    "https://creator.xiaohongshu.com/*",
+    "https://baijiahao.baidu.com/*"
   ],
   "action": {
-    "default_title": "砚界 · 抖音发布助手",
+    "default_title": "砚界 · 多平台发布助手",
     "default_popup": "popup.html"
   },
   "content_scripts": [
     {
       "matches": ["https://creator.douyin.com/*"],
-      "js": ["cover-upload.js", "editor-caret.js", "content.js"],
+      "js": ["platforms.js", "cover-upload.js", "editor-caret.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://cp.kuaishou.com/*", "https://member.bilibili.com/*", "https://creator.xiaohongshu.com/*", "https://baijiahao.baidu.com/*"],
+      "js": ["platforms.js", "multi-platform.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

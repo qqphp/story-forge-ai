@@ -3,6 +3,7 @@ import asyncio
 import base64
 import io
 import unittest
+import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
@@ -34,16 +35,17 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertTrue(self.client.get("/api/health").json()["ok"])
         self.assertEqual(self.client.get("/api/workflows").json(), [])
 
-    def test_douyin_page_private_network_preflight_is_allowed(self):
-        response = self.client.options("/api/publish/extension/tasks/next", headers={
-            "Origin": "https://creator.douyin.com",
-            "Access-Control-Request-Method": "GET",
-            "Access-Control-Request-Headers": "X-StoryForge-Token",
-            "Access-Control-Request-Private-Network": "true",
-        })
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["access-control-allow-origin"], "https://creator.douyin.com")
-        self.assertEqual(response.headers["access-control-allow-private-network"], "true")
+    def test_creator_pages_private_network_preflight_is_allowed(self):
+        for origin in ("https://creator.douyin.com", "https://cp.kuaishou.com", "https://member.bilibili.com", "https://creator.xiaohongshu.com", "https://baijiahao.baidu.com"):
+            response = self.client.options("/api/publish/extension/tasks/next", headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "X-StoryForge-Token",
+                "Access-Control-Request-Private-Network": "true",
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["access-control-allow-origin"], origin)
+            self.assertEqual(response.headers["access-control-allow-private-network"], "true")
 
     def test_create_rejects_missing_title(self):
         response = self.client.post("/api/workflows", json={"book_title": ""})
@@ -412,6 +414,22 @@ class StoryForgeApiTests(unittest.TestCase):
         completed = self.client.put(f"/api/publish/extension/tasks/{task['id']}", headers=headers,
                                     json={"status": "completed"})
         self.assertEqual(completed.json()["status"], "completed")
+        for platform in ("kuaishou", "bilibili", "xiaohongshu", "baijiahao"):
+            created_platform_task = self.client.post("/api/publish/tasks", json={
+                "workflow_id": workflow_id, "platform": platform, "title": "一本值得读的书",
+                "description": "这是作品简介", "video_url": video_url, "cover_urls": [square_cover_url],
+            })
+            self.assertEqual(created_platform_task.status_code, 201)
+            platform_task = created_platform_task.json()
+            self.assertEqual(platform_task["platform"], platform)
+            self.assertEqual(self.client.get("/api/publish/tasks", params={"platform": platform}).json()[0]["id"], platform_task["id"])
+            self.assertEqual(self.client.get("/api/publish/extension/tasks/next", params={"platform": platform}, headers=headers).json()["task"]["id"], platform_task["id"])
+        extension_zip = self.client.get("/api/publish/extension/download")
+        self.assertEqual(extension_zip.status_code, 200)
+        self.assertEqual(extension_zip.headers["content-type"], "application/zip")
+        with zipfile.ZipFile(io.BytesIO(extension_zip.content)) as bundle:
+            self.assertIn("browser-extension/manifest.json", bundle.namelist())
+            self.assertIn("browser-extension/multi-platform.js", bundle.namelist())
 
     def test_publish_task_rejects_foreign_or_missing_video(self):
         with patch.object(main, "process_workflow"):
@@ -422,6 +440,19 @@ class StoryForgeApiTests(unittest.TestCase):
         })
         self.assertEqual(missing.status_code, 422)
         self.assertEqual(foreign.status_code, 422)
+
+    def test_publish_task_list_tolerates_legacy_blank_json_fields(self):
+        with patch.object(main, "process_workflow"):
+            workflow_id = self.client.post("/api/workflows", json={"book_title": "旧发布任务"}).json()["id"]
+        now = 1_700_000_000
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO publish_tasks(id,workflow_id,platform,status,title,description,tags,topics,video_url,cover_url,covers,created_at,updated_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("legacy-task", workflow_id, "douyin", "prepared", "旧任务", "", "[]", "   ", "/media/legacy.mp4", "", "[]", now, now, ""),
+            )
+        response = self.client.get("/api/publish/tasks")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]["topics"], [])
 
 
 if __name__ == "__main__":
