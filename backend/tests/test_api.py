@@ -145,7 +145,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(listing["total"], 1)
         self.assertEqual(listing["items"][0]["request_params"]["messages"][0]["content"], "生成话题")
 
-    def test_new_workflow_generates_five_tags_and_topics_before_covers(self):
+    def test_new_workflow_generates_eight_tags_and_topics_before_covers(self):
         with patch.object(main, "process_workflow"):
             created = self.client.post("/api/workflows", json={"book_title": "西游记"})
         workflow_id = created.json()["id"]
@@ -178,8 +178,8 @@ class StoryForgeApiTests(unittest.TestCase):
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["step"], 7)
         self.assertEqual(workflow["status"], "completed")
-        self.assertEqual(len(workflow["tags"]), 5)
-        self.assertEqual(len(workflow["topics"]), 5)
+        self.assertEqual(len(workflow["tags"]), 8)
+        self.assertEqual(len(workflow["topics"]), 8)
         self.assertEqual(workflow["topics"][0], "西游记")
         self.assertTrue(workflow["covers"])
 
@@ -376,14 +376,14 @@ class StoryForgeApiTests(unittest.TestCase):
                          (main.json.dumps(payload, ensure_ascii=False), workflow_id))
         task_response = self.client.post("/api/publish/tasks", json={
             "workflow_id": workflow_id, "platform": "douyin", "title": "一本值得读的书",
-            "description": "这是作品简介", "topics": ["读书", "好书推荐", "#读书"],
+            "description": "这是作品简介", "topics": ["读书", "好书推荐", "名著解读", "读书分享", "经典文学", "文学阅读", "#读书"],
             "video_url": video_url, "cover_urls": [cover_url, horizontal_cover_url],
         })
         self.assertEqual(task_response.status_code, 201)
         task = task_response.json()
         self.assertEqual(task["status"], "prepared")
         self.assertEqual(task["tags"], ["文学名著", "人物成长"])
-        self.assertEqual(task["topics"], ["读书", "好书推荐"])
+        self.assertEqual(task["topics"], ["读书", "好书推荐", "名著解读", "读书分享", "经典文学"])
         self.assertEqual([cover["image_ratio"] for cover in task["covers"]], ["3:4", "4:3"])
         unsupported = self.client.post("/api/publish/tasks", json={
             "workflow_id": workflow_id, "title": "不裁剪方图", "video_url": video_url,
@@ -416,12 +416,17 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(completed.json()["status"], "completed")
         for platform in ("kuaishou", "bilibili", "xiaohongshu", "baijiahao"):
             created_platform_task = self.client.post("/api/publish/tasks", json={
-                "workflow_id": workflow_id, "platform": platform, "title": "一本值得读的书",
-                "description": "这是作品简介", "video_url": video_url, "cover_urls": [square_cover_url],
+                "workflow_id": workflow_id, "platform": platform,
+                **({} if platform == "kuaishou" else {"title": "一本值得读的书"}),
+                "description": "这是作品简介", "topics": ["读书", "好书推荐", "名著解读", "读书分享", "经典文学", "文学阅读"], "video_url": video_url,
+                "cover_urls": [cover_url if platform == "kuaishou" else square_cover_url],
             })
             self.assertEqual(created_platform_task.status_code, 201)
             platform_task = created_platform_task.json()
             self.assertEqual(platform_task["platform"], platform)
+            if platform == "kuaishou":
+                self.assertEqual(platform_task["title"], "")
+                self.assertEqual(platform_task["topics"], ["读书", "好书推荐", "名著解读", "读书分享"])
             self.assertEqual(self.client.get("/api/publish/tasks", params={"platform": platform}).json()[0]["id"], platform_task["id"])
             self.assertEqual(self.client.get("/api/publish/extension/tasks/next", params={"platform": platform}, headers=headers).json()["task"]["id"], platform_task["id"])
         extension_zip = self.client.get("/api/publish/extension/download")

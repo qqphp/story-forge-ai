@@ -273,7 +273,7 @@ class SettingsPayload(BaseModel):
 class PublishTaskCreate(BaseModel):
     workflow_id: str = Field(min_length=1, max_length=40)
     platform: str = Field(default="douyin", pattern="^(douyin|kuaishou|bilibili|xiaohongshu|baijiahao)$")
-    title: str = Field(min_length=1, max_length=100)
+    title: str = Field(default="", max_length=100)
     description: str = Field(default="", max_length=2000)
     topics: list[str] = Field(default_factory=list, max_length=10)
     video_url: str = Field(default="", max_length=1000)
@@ -477,7 +477,7 @@ def generated_taxonomy(raw: str | None, title: str) -> tuple[list[str], list[str
         source = values if isinstance(values, list) else []
         terms = [str(value).strip().lstrip("#").strip().replace(" ", "") for value in source]
         terms.extend(fallbacks)
-        return [value for value in dict.fromkeys(terms) if value and len(value) <= 30][:5]
+        return [value for value in dict.fromkeys(terms) if value and len(value) <= 30][:8]
 
     parsed: dict[str, Any] = {}
     if raw:
@@ -730,7 +730,7 @@ async def process_workflow(wid: str) -> None:
 
         share_text = "\n\n---\n\n".join(draft["text"] for draft in polished)
         taxonomy_raw = await llm([
-            {"role": "system", "content": "你是中文内容运营编辑。根据给定书籍信息与分享稿生成内容分类。只输出严格JSON，不要Markdown：{\"tags\":[5个简短标签],\"topics\":[5个适合短视频平台的话题词]}。每项不带#，不含空格，不超过15个汉字，去重并与内容高度相关。"},
+            {"role": "system", "content": "你是中文内容运营编辑。根据给定书籍信息与分享稿生成内容分类。只输出严格JSON，不要Markdown：{\"tags\":[8个简短标签],\"topics\":[8个适合短视频平台的话题词]}。每项不带#，不含空格，不超过15个汉字，去重并与内容高度相关。"},
             {"role": "user", "content": f"书籍标题：{title}\n书籍简介：{description}\n分享稿：\n{share_text}"},
         ], settings, "标签话题生成")
         if wid in DELETING_WORKFLOWS: return
@@ -1065,6 +1065,8 @@ def publish_tasks_list(platform: str = ""):
 
 @app.post("/api/publish/tasks", status_code=201)
 def publish_task_create(value: PublishTaskCreate):
+    if value.platform != "kuaishou" and not value.title.strip():
+        raise HTTPException(422, "该平台需要作品标题")
     with db() as conn:
         workflow_record = conn.execute("SELECT * FROM workflows WHERE id=?", (value.workflow_id,)).fetchone()
         if not workflow_record:
@@ -1084,9 +1086,13 @@ def publish_task_create(value: PublishTaskCreate):
             for url in value.cover_urls
         ]
         unsupported_ratios = [cover["image_ratio"] or "未记录" for cover in selected_covers if cover["image_ratio"] not in {"3:4", "4:3"}]
-        if value.platform == "douyin" and unsupported_ratios:
-            raise HTTPException(422, f"抖音封面只支持原图直传3:4或4:3，不能使用：{', '.join(unsupported_ratios)}")
+        if value.platform in {"douyin", "kuaishou"} and unsupported_ratios:
+            platform_label = {"douyin": "抖音", "kuaishou": "快手"}[value.platform]
+            raise HTTPException(422, f"{platform_label}封面只支持原图直传3:4或4:3，不能使用：{', '.join(unsupported_ratios)}")
         topics = value.topics or workflow.get("topics", [])
+        topic_limit = {"kuaishou": 4, "douyin": 5}.get(value.platform)
+        if topic_limit is not None:
+            topics = topics[:topic_limit]
         tags = workflow.get("tags", [])
         cover_url = selected_covers[0]["url"] if selected_covers else ""
         task_id, now = uuid.uuid4().hex[:16], int(time.time())

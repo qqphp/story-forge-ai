@@ -41,6 +41,31 @@ test("extension supports all configured creator platforms without cookie access"
   assert.ok(manifest.host_permissions.includes("http://127.0.0.1:8000/*"));
 });
 
+test("kuaishou fills only description and topics, then uploads one 3:4 cover", () => {
+  assert.match(multiPlatform, /platform!=="kuaishou"&&title/);
+  assert.match(multiPlatform, /\[contenteditable='true'\]\[placeholder\*='描述'\]/);
+  assert.match(multiPlatform, /#work-description-edit/);
+  assert.match(multiPlatform, /appendKuaishouTopics/);
+  assert.match(multiPlatform, /const text=`#\$\{tag\} `;/);
+  assert.match(multiPlatform, /setTimeout\(resolve,500\)/);
+  assert.match(multiPlatform, /\[class\*='_cover-full-editor_'\]/);
+  assert.match(multiPlatform, /\[class\*='_header-title-item_'\]/);
+  assert.match(multiPlatform, /\[class\*='_ratio-item_'\]/);
+  assert.match(multiPlatform, /assignFile\(input,await fetchFile[\s\S]*setTimeout\(resolve,2000\)[\s\S]*kuaishouConfirmButton\(dialog\)/);
+  assert.match(multiPlatform, /kuaishouConfirmButton/);
+  assert.match(multiPlatform, /dialog\.querySelectorAll\("button"\)/);
+  assert.match(backend, /topic_limit = \{"kuaishou": 4, "douyin": 5\}/);
+  assert.match(page, /platform==="kuaishou"\?4:platform==="douyin"\?5/);
+  assert.match(multiPlatform, /kuaishouCovers/);
+  assert.match(multiPlatform, /item\.image_ratio==="3:4"/);
+  assert.doesNotMatch(multiPlatform, /\["4:3","3:4"\]/);
+  assert.match(multiPlatform, /exactTextElements\("上传封面",dialog\)/);
+  assert.match(multiPlatform, /exactTextElements\("确认",dialog\)/);
+  assert.match(page, /快手视频发布使用一张3:4的图片即可，需要勾选3:4图片尺寸。/);
+  assert.match(page, /const requiresTitle=targets\.some\(platform=>platform!=="kuaishou"\)/);
+  assert.match(backend, /value\.platform in \{"douyin", "kuaishou"\}/);
+});
+
 test("first topic insertion targets the final text node of the description", () => {
   const selection={removeAllRanges(){},addRange(range){this.range=range;}};
   const range={selectNodeContents(node){this.selectedNode=node;},setStart(node,offset){this.startContainer=node;this.startOffset=offset;},collapse(){}};
