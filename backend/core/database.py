@@ -36,7 +36,7 @@ def initialize_schema(db: Callable[[], ContextManager[sqlite3.Connection]]) -> N
             CREATE TABLE IF NOT EXISTS prompt_templates (
               id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('writing','cover')),
               name TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL,
-              updated_at INTEGER NOT NULL, image_sizes TEXT NOT NULL DEFAULT '["2:3"]'
+              updated_at INTEGER NOT NULL, image_sizes TEXT NOT NULL DEFAULT '["16:9", "9:16"]'
             );
             CREATE INDEX IF NOT EXISTS idx_prompt_templates_kind ON prompt_templates(kind);
             CREATE TABLE IF NOT EXISTS background_music (
@@ -95,7 +95,7 @@ def initialize_schema(db: Callable[[], ContextManager[sqlite3.Connection]]) -> N
             conn.executemany("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?,?)", [
                 ("writing-short-video", "writing", "短视频口播", "适合 2 分钟短视频口播，有真实阅读感受", now, now, '["2:3"]'),
                 ("writing-insight", "writing", "反常识洞见", "从一个反常识观点切入，避免剧透，结尾给出阅读建议", now, now, '["2:3"]'),
-                ("cover-literary", "cover", "文学质感", "克制的文学感，竖版构图，无文字，为标题留出空间", now, now, '["2:3"]'),
+                ("cover-literary", "cover", "文学质感", "克制的文学感，竖版构图，无文字，为标题留出空间", now, now, '["16:9", "9:16"]'),
             ])
         legacy_size_ratios = {"1024x1024": "1:1", "2048x2048": "1:1", "1600x1200": "4:3", "1536x1024": "3:2", "2048x1152": "16:9", "3840x2160": "16:9", "2538x1080": "2.35:1", "1200x1600": "3:4", "1024x1536": "2:3", "2160x3840": "9:16"}
         for row in conn.execute("SELECT id,image_sizes FROM prompt_templates").fetchall():

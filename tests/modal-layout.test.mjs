@@ -144,10 +144,10 @@ test("workspace supports compact mobile navigation and bulk list deletion", () =
   assert.match(css, /grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
 });
 
-test("cover prompt requires at least one image size", () => {
-  assert.match(page, /kind==="cover"&&!imageSizes\.length/);
+test("cover prompt requires both video cover ratios", () => {
+  assert.match(page, /imageSizes\.includes\("16:9"\)&&imageSizes\.includes\("9:16"\)/);
   assert.match(page, /<ImageSizePicker value=\{imageSizes\} onChange=\{setImageSizes\}\/>/);
-  assert.match(page, /disabled=\{!connected\|\|!name\.trim\(\)\|\|!text\.trim\(\)\|\|\(kind==="cover"&&!imageSizes\.length\)\|\|saving\}/);
+  assert.match(page, /disabled=\{!connected\|\|!name\.trim\(\)\|\|!text\.trim\(\)\|\|\(kind==="cover"&&!hasRequiredCoverSizes\)\|\|saving\}/);
 });
 
 test("batch creation starts with six rows and shares generation settings", () => {

@@ -84,7 +84,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(updated.json()["text"], revised)
 
     def test_cover_template_image_sizes_are_saved_and_snapshotted(self):
-        sizes = ["1:1", "16:9", "2:3"]
+        sizes = ["1:1", "16:9", "9:16", "2:3"]
         cover = self.client.post("/api/prompts", json={
             "kind": "cover", "name": "多尺寸封面", "text": "无文字、文学感", "image_sizes": sizes,
         })
@@ -94,6 +94,16 @@ class StoryForgeApiTests(unittest.TestCase):
             response = self.client.post("/api/workflows", json={"book_title": "尺寸测试", "cover_prompt_ids": [cover.json()["id"]]})
         workflow = self.client.get(f"/api/workflows/{response.json()['id']}").json()
         self.assertEqual(workflow["cover_prompts"][0]["image_sizes"], sizes)
+
+    def test_new_cover_templates_default_to_video_cover_ratios(self):
+        cover = self.client.post("/api/prompts", json={"kind": "cover", "name": "默认比例", "text": "无文字、文学感"})
+        self.assertEqual(cover.status_code, 201)
+        self.assertEqual(cover.json()["image_sizes"], ["16:9", "9:16"])
+
+    def test_cover_template_requires_both_video_cover_ratios(self):
+        created = self.client.post("/api/prompts", json={"kind": "cover", "name": "缺少竖版", "text": "无文字、文学感", "image_sizes": ["16:9"]})
+        self.assertEqual(created.status_code, 400)
+        self.assertIn("16:9 和 9:16", created.json()["detail"])
 
     def test_cover_generation_uses_ratio_prompt_without_resolution_or_local_resize(self):
         image = Image.new("RGB", (73, 41), "navy")
@@ -212,7 +222,7 @@ class StoryForgeApiTests(unittest.TestCase):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["status"], "completed")
-        self.assertEqual(workflow["covers"][0]["image_ratio"], "2:3")
+        self.assertEqual(workflow["covers"][0]["image_ratio"], "16:9")
 
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()

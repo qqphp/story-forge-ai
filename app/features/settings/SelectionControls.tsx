@@ -26,5 +26,5 @@ export function FormatSelect({formats,value,onChange}:{formats:string[];value:st
 
 export function SpeechRateControl({value,onChange}:{value:number;onChange:(rate:number)=>void}) {
   const label=value===0?"正常":`${value>0?"+":""}${value}%`;
-  return <label className="rate-control"><span>语速 <b>{label}</b></span><input type="range" min="-50" max="100" step="5" value={value} onChange={e=>onChange(Number(e.target.value))}/><small><span>慢 -50%</span><span>正常</span><span>快 +100%</span></small></label>;
+  return <label className="rate-control"><span>语速 <b>{label}</b></span><input type="range" min="-50" max="100" step="5" value={value} onChange={e=>onChange(Number(e.target.value))}/><small aria-hidden="true" style={{display:"block",position:"relative",height:14}}><span style={{position:"absolute",left:0,whiteSpace:"nowrap"}}>慢 -50%</span><span style={{position:"absolute",left:"33.333%",transform:"translateX(-50%)",whiteSpace:"nowrap"}}>正常</span><span style={{position:"absolute",right:0,whiteSpace:"nowrap"}}>快 +100%</span></small></label>;
 }

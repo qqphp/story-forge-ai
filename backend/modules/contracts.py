@@ -40,7 +40,7 @@ class BatchWorkflowCreate(WorkflowOptions):
 
 
 MAX_PROMPT_LENGTH = 100_000
-DEFAULT_IMAGE_SIZES = ["2:3"]
+DEFAULT_IMAGE_SIZES = ["16:9", "9:16"]
 IMAGE_SIZES = {"1:1", "4:5", "2:3", "3:4", "9:16", "6:7", "1.91:1", "2.35:1", "3:2", "4:3", "16:9"}
 
 
