@@ -1,4 +1,4 @@
-/* global chrome */
+/* global chrome, StoryForgePlatforms */
 const apiBaseInput=document.querySelector("#apiBase");
 const tokenInput=document.querySelector("#token");
 const platformInput=document.querySelector("#platform");

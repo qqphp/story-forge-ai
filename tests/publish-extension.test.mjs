@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import vm from "node:vm";
 
-const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+const appRoot = fileURLToPath(new URL("../app/", import.meta.url));
+const backendRoot = fileURLToPath(new URL("../backend/", import.meta.url));
+const sourceTree = (root, suffix) => readdirSync(root, { recursive: true })
+  .filter(file => file.endsWith(suffix))
+  .map(file => readFileSync(join(root, file), "utf8"))
+  .join("\n");
+const page = sourceTree(appRoot, ".tsx");
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-const backend = readFileSync(new URL("../backend/main.py", import.meta.url), "utf8");
+const backend = sourceTree(backendRoot, ".py");
 const manifest = JSON.parse(readFileSync(new URL("../browser-extension/manifest.json", import.meta.url), "utf8"));
 const content = readFileSync(new URL("../browser-extension/content.js", import.meta.url), "utf8");
 const coverUpload = readFileSync(new URL("../browser-extension/cover-upload.js", import.meta.url), "utf8");

@@ -9,19 +9,14 @@ import json
 import math
 import os
 import secrets
-import shutil
-import sqlite3
-import string
 import subprocess
 import time
 import uuid
 import wave
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
@@ -29,8 +24,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
+from backend.modules.contracts import (
+    BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
+    PromptTemplateCreate, PromptTemplateUpdate, PublishTaskCreate,
+    PublishTaskStatusUpdate, SettingsPayload, WorkflowCreate, WorkflowOptions,
+)
+from backend.modules.serializers import publish_task_row, workflow_row
+from backend.core.database import connection, initialize_schema
+from backend.modules.media.storage import (
+    cleanup_workflow_media as cleanup_media_directory,
+    create_workflow_media_dir as create_media_directory,
+    workflow_media_dir as resolve_media_directory,
+)
+from backend.modules.workflows.content import demo_copy, generated_taxonomy
+from backend.modules.prompts.service import create_template, delete_template, list_templates, update_template
+from backend.modules.media.music import create_music, delete_music, list_music, update_music
+from backend.modules.request_logs.service import clear_logs, list_logs, record_log
+from backend.modules.settings.service import load_settings, save_settings, to_public
+from backend.modules.publishing.service import create_task, delete_task, list_tasks
+from backend.integrations.chat import complete_chat
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLISH_PLATFORMS = ("douyin", "kuaishou", "bilibili", "xiaohongshu", "baijiahao")
@@ -47,107 +60,12 @@ VOICE_SAMPLES.mkdir(exist_ok=True)
 
 @contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
+    with connection(DB_PATH) as conn:
         yield conn
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def init_db() -> None:
-    with db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-              id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS workflows (
-              id TEXT PRIMARY KEY, book_title TEXT NOT NULL, author TEXT,
-              edition TEXT, status TEXT NOT NULL, step INTEGER NOT NULL,
-              progress INTEGER NOT NULL, created_at INTEGER NOT NULL,
-              updated_at INTEGER NOT NULL, payload TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS prompt_templates (
-              id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('writing','cover')),
-              name TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL,
-              updated_at INTEGER NOT NULL, image_sizes TEXT NOT NULL DEFAULT '["2:3"]'
-            );
-            CREATE INDEX IF NOT EXISTS idx_prompt_templates_kind ON prompt_templates(kind);
-            CREATE TABLE IF NOT EXISTS background_music (
-              id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
-              category TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_background_music_created_at ON background_music(created_at DESC);
-            CREATE TABLE IF NOT EXISTS request_logs (
-              id INTEGER PRIMARY KEY AUTOINCREMENT, request_type TEXT NOT NULL,
-              request_url TEXT NOT NULL, request_params TEXT NOT NULL, created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_request_logs_type_created_at ON request_logs(request_type, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
-            CREATE TABLE IF NOT EXISTS application_meta (
-              key TEXT PRIMARY KEY, value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS publish_tasks (
-              id TEXT PRIMARY KEY,
-              workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-              platform TEXT NOT NULL CHECK(platform IN ('douyin','kuaishou','bilibili','xiaohongshu','baijiahao')),
-              status TEXT NOT NULL CHECK(status IN ('prepared','filling','ready','completed','failed','cancelled')),
-              title TEXT NOT NULL, description TEXT NOT NULL, tags TEXT NOT NULL,
-              topics TEXT NOT NULL DEFAULT '[]', video_url TEXT NOT NULL,
-              cover_url TEXT NOT NULL DEFAULT '', covers TEXT NOT NULL DEFAULT '[]',
-              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-              error TEXT NOT NULL DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_publish_tasks_platform_status_created
-              ON publish_tasks(platform, status, created_at);
-            """
-        )
-        if not conn.execute("SELECT 1 FROM application_meta WHERE key='extension_pairing_token'").fetchone():
-            conn.execute("INSERT INTO application_meta(key,value) VALUES('extension_pairing_token',?)", (secrets.token_hex(16),))
-        columns = {column["name"] for column in conn.execute("PRAGMA table_info(prompt_templates)")}
-        if "image_sizes" not in columns:
-            conn.execute("ALTER TABLE prompt_templates ADD COLUMN image_sizes TEXT NOT NULL DEFAULT '[\"2:3\"]'")
-        publish_columns = {column["name"] for column in conn.execute("PRAGMA table_info(publish_tasks)")}
-        if "topics" not in publish_columns:
-            conn.execute("ALTER TABLE publish_tasks ADD COLUMN topics TEXT NOT NULL DEFAULT '[]'")
-        if "covers" not in publish_columns:
-            conn.execute("ALTER TABLE publish_tasks ADD COLUMN covers TEXT NOT NULL DEFAULT '[]'")
-        publish_schema = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='publish_tasks'").fetchone()["sql"]
-        if "kuaishou" not in publish_schema:
-            conn.execute("DROP INDEX IF EXISTS idx_publish_tasks_platform_status_created")
-            conn.execute("ALTER TABLE publish_tasks RENAME TO publish_tasks_legacy")
-            conn.execute("""CREATE TABLE publish_tasks (
-              id TEXT PRIMARY KEY,
-              workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-              platform TEXT NOT NULL CHECK(platform IN ('douyin','kuaishou','bilibili','xiaohongshu','baijiahao')),
-              status TEXT NOT NULL CHECK(status IN ('prepared','filling','ready','completed','failed','cancelled')),
-              title TEXT NOT NULL, description TEXT NOT NULL, tags TEXT NOT NULL,
-              topics TEXT NOT NULL DEFAULT '[]', video_url TEXT NOT NULL,
-              cover_url TEXT NOT NULL DEFAULT '', covers TEXT NOT NULL DEFAULT '[]',
-              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-              error TEXT NOT NULL DEFAULT ''
-            )""")
-            conn.execute("INSERT INTO publish_tasks SELECT * FROM publish_tasks_legacy")
-            conn.execute("DROP TABLE publish_tasks_legacy")
-            conn.execute("CREATE INDEX idx_publish_tasks_platform_status_created ON publish_tasks(platform, status, created_at)")
-        count = conn.execute("SELECT COUNT(*) AS count FROM prompt_templates").fetchone()["count"]
-        if count == 0:
-            now = int(time.time())
-            defaults = [
-                ("writing-short-video", "writing", "短视频口播", "适合 2 分钟短视频口播，有真实阅读感受", now, now, '["2:3"]'),
-                ("writing-insight", "writing", "反常识洞见", "从一个反常识观点切入，避免剧透，结尾给出阅读建议", now, now, '["2:3"]'),
-                ("cover-literary", "cover", "文学质感", "克制的文学感，竖版构图，无文字，为标题留出空间", now, now, '["2:3"]'),
-            ]
-            conn.executemany("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?,?)", defaults)
-        legacy_size_ratios = {"1024x1024": "1:1", "2048x2048": "1:1", "1600x1200": "4:3", "1536x1024": "3:2", "2048x1152": "16:9", "3840x2160": "16:9", "2538x1080": "2.35:1", "1200x1600": "3:4", "1024x1536": "2:3", "2160x3840": "9:16"}
-        for row in conn.execute("SELECT id,image_sizes FROM prompt_templates").fetchall():
-            sizes = json.loads(row["image_sizes"])
-            if any("x" in size for size in sizes):
-                conn.execute("UPDATE prompt_templates SET image_sizes=? WHERE id=?", (json.dumps(list(dict.fromkeys(legacy_size_ratios.get(size, "2:3") for size in sizes))), row["id"]))
-        conn.execute("PRAGMA optimize")
+    initialize_schema(db)
 
 
 DEFAULT_SETTINGS = {
@@ -197,185 +115,12 @@ VOICE_TRANSLATION_LOCK = asyncio.Lock()
 VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流畅自然的AI配音。"
 
 
-class PromptItem(BaseModel):
-    text: str
-    enabled: bool = True
-
-
-class WorkflowOptions(BaseModel):
-    writing_prompt_ids: list[str] = Field(default_factory=list)
-    cover_prompt_ids: list[str] = Field(default_factory=list)
-    voice: str = Field(default="zh-CN-XiaoxiaoNeural", min_length=1, max_length=120)
-    speech_rate: int = Field(default=0, ge=-50, le=100)
-    background_music_id: str | None = Field(default=None, max_length=40)
-    background_music_volume: float = Field(default=.2, ge=0, le=1)
-    background_music_fade_in: float = Field(default=2, ge=0, le=10)
-    background_music_fade_out: float = Field(default=2, ge=0, le=10)
-
-
-class BookCreate(BaseModel):
-    book_title: str = Field(min_length=1, max_length=160)
-    author: str = Field(default="", max_length=120)
-    edition: str = Field(default="", max_length=120)
-
-
-class WorkflowCreate(WorkflowOptions, BookCreate):
-    pass
-
-
-class BatchWorkflowCreate(WorkflowOptions):
-    books: list[BookCreate] = Field(min_length=1, max_length=50)
-
-
-MAX_PROMPT_LENGTH = 100_000
-DEFAULT_IMAGE_SIZES = ["2:3"]
-IMAGE_SIZES = {"1:1", "4:5", "2:3", "3:4", "9:16", "6:7", "1.91:1", "2.35:1", "3:2", "4:3", "16:9"}
-
-
-class PromptTemplateCreate(BaseModel):
-    kind: str = Field(pattern="^(writing|cover)$")
-    name: str = Field(min_length=1, max_length=80)
-    text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
-    image_sizes: list[str] = Field(default_factory=lambda: list(DEFAULT_IMAGE_SIZES), max_length=len(IMAGE_SIZES))
-
-    @field_validator("image_sizes")
-    @classmethod
-    def validate_image_sizes(cls, values: list[str]) -> list[str]:
-        values = list(dict.fromkeys(values))
-        if not values or any(value not in IMAGE_SIZES for value in values):
-            raise ValueError("图片尺寸无效")
-        return values
-
-
-class PromptTemplateUpdate(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
-    image_sizes: list[str] = Field(default_factory=lambda: list(DEFAULT_IMAGE_SIZES), max_length=len(IMAGE_SIZES))
-
-    @field_validator("image_sizes")
-    @classmethod
-    def validate_image_sizes(cls, values: list[str]) -> list[str]:
-        return PromptTemplateCreate.validate_image_sizes(values)
-
-
-class SettingsPayload(BaseModel):
-    api_base: str = "https://api.teamorouter.com/v1"
-    model: str = "gpt-5.4-mini"
-    image_model: str = "gpt-image-2"
-    api_key: str = ""
-    azure_speech_key: str = ""
-    azure_speech_region: str = "eastus"
-    voice_format: str = "audio-24khz-48kbitrate-mono-mp3"
-    voices: list[str] = ["zh-CN-XiaoxiaoNeural"]
-    speech_rate: int = Field(default=0, ge=-50, le=100)
-
-
-class PublishTaskCreate(BaseModel):
-    workflow_id: str = Field(min_length=1, max_length=40)
-    platform: str = Field(default="douyin", pattern="^(douyin|kuaishou|bilibili|xiaohongshu|baijiahao)$")
-    title: str = Field(default="", max_length=100)
-    description: str = Field(default="", max_length=2000)
-    tags: list[str] = Field(default_factory=list, max_length=10)
-    topics: list[str] = Field(default_factory=list, max_length=10)
-    video_url: str = Field(default="", max_length=1000)
-    cover_urls: list[str] = Field(default_factory=list, max_length=20)
-
-    @field_validator("topics")
-    @classmethod
-    def clean_topics(cls, values: list[str]) -> list[str]:
-        cleaned = [value.strip().lstrip("#").strip() for value in values]
-        cleaned = [value for value in cleaned if value]
-        if any(len(value) > 30 for value in cleaned):
-            raise ValueError("单个话题不能超过30个字符")
-        return list(dict.fromkeys(cleaned))
-
-    @field_validator("tags")
-    @classmethod
-    def clean_tags(cls, values: list[str]) -> list[str]:
-        cleaned = [value.strip().lstrip("#").strip() for value in values]
-        cleaned = [value for value in cleaned if value]
-        if any(len(value) > 20 for value in cleaned):
-            raise ValueError("单个标签不能超过20个字符")
-        return list(dict.fromkeys(cleaned))
-
-    @field_validator("cover_urls")
-    @classmethod
-    def clean_cover_urls(cls, values: list[str]) -> list[str]:
-        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
-
-
-class PublishTaskStatusUpdate(BaseModel):
-    status: str = Field(pattern="^(filling|ready|completed|failed)$")
-    error: str = Field(default="", max_length=500)
-
-
-class BackgroundMusicCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    url: str = Field(min_length=1, max_length=2000)
-    category: str = Field(default="", max_length=80)
-
-    @field_validator("url")
-    @classmethod
-    def require_https(cls, value: str) -> str:
-        value = value.strip()
-        parsed = urlparse(value)
-        if parsed.scheme.lower() != "https" or not parsed.netloc:
-            raise ValueError("背景音乐链接必须使用 https")
-        return value
-
-
 def get_settings() -> dict[str, Any]:
-    with db() as conn:
-        row = conn.execute("SELECT payload FROM settings WHERE id=1").fetchone()
-    result = DEFAULT_SETTINGS | (json.loads(row["payload"]) if row else {})
-    result["api_base"] = os.getenv("MODEL_API_BASE", result["api_base"])
-    result["model"] = os.getenv("MODEL_NAME", result["model"])
-    result["image_model"] = os.getenv("IMAGE_MODEL_NAME", result["image_model"])
-    result["api_key"] = result.get("api_key") or os.getenv("MODEL_API_KEY", "")
-    result["azure_speech_key"] = result.get("azure_speech_key") or os.getenv("AZURE_SPEECH_KEY", "")
-    return result
+    return load_settings(db, DEFAULT_SETTINGS)
 
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    result = dict(settings)
-    result["api_key"] = "••••••••" if result.get("api_key") else ""
-    result["azure_speech_key"] = "••••••••" if result.get("azure_speech_key") else ""
-    return result
-
-
-def prompt_template_row(row: sqlite3.Row) -> dict[str, Any]:
-    result = dict(row)
-    result["image_sizes"] = json.loads(result["image_sizes"])
-    return result
-
-
-def workflow_row(row: sqlite3.Row) -> dict[str, Any]:
-    payload = json.loads(row["payload"])
-    return {
-        "id": row["id"], "book_title": row["book_title"], "author": row["author"],
-        "edition": row["edition"], "status": row["status"], "step": row["step"],
-        "progress": row["progress"], "created_at": row["created_at"],
-        "updated_at": row["updated_at"], **payload,
-    }
-
-
-def publish_task_row(row: sqlite3.Row) -> dict[str, Any]:
-    def decode_list(value: Any) -> list[Any]:
-        if isinstance(value, list):
-            return value
-        if not isinstance(value, str) or not value.strip():
-            return []
-        try:
-            decoded = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return []
-        return decoded if isinstance(decoded, list) else []
-
-    result = dict(row)
-    result["tags"] = decode_list(result.get("tags"))
-    result["topics"] = decode_list(result.get("topics"))
-    result["covers"] = decode_list(result.get("covers"))
-    return result
+    return to_public(settings)
 
 
 def extension_pairing_token() -> str:
@@ -392,11 +137,7 @@ def require_extension_token(value: str | None) -> None:
 
 
 def log_request(request_type: str, request_url: str, request_params: dict[str, Any]) -> None:
-    with db() as conn:
-        conn.execute(
-            "INSERT INTO request_logs(request_type,request_url,request_params,created_at) VALUES(?,?,?,?)",
-            (request_type, request_url, json.dumps(request_params, ensure_ascii=False), int(time.time())),
-        )
+    record_log(db, request_type, request_url, request_params)
 
 
 def save_workflow(wid: str, *, status: str | None = None, step: int | None = None,
@@ -416,94 +157,19 @@ def save_workflow(wid: str, *, status: str | None = None, step: int | None = Non
 
 
 def create_workflow_media_dir() -> tuple[str, Path]:
-    media_root = MEDIA.resolve()
-    for _ in range(20):
-        random_letters = "".join(secrets.choice(string.ascii_lowercase) for _ in range(4))
-        folder_name = f"{datetime.now().strftime('%Y%m%d')}{random_letters}{int(time.time())}"
-        target = (MEDIA / folder_name).resolve()
-        if target.parent != media_root:
-            raise RuntimeError("工作流产物目录越界")
-        try:
-            target.mkdir(parents=False, exist_ok=False)
-            return folder_name, target
-        except FileExistsError:
-            continue
-    raise RuntimeError("无法创建唯一的工作流产物目录")
+    return create_media_directory(MEDIA)
 
 
 def workflow_media_dir(output_dir: str) -> Path:
-    target = (MEDIA / output_dir).resolve()
-    if target.parent != MEDIA.resolve():
-        raise RuntimeError("工作流产物目录越界")
-    return target
+    return resolve_media_directory(MEDIA, output_dir)
 
 
 def cleanup_workflow_media(wid: str, output_dir: str | None = None) -> int:
-    if not output_dir:
-        with db() as conn:
-            row = conn.execute("SELECT payload FROM workflows WHERE id=?", (wid,)).fetchone()
-        if row:
-            output_dir = json.loads(row["payload"]).get("output_dir")
-    if not output_dir:
-        return 0
-    target = workflow_media_dir(output_dir)
-    if not target.is_dir():
-        return 0
-    removed = sum(1 for candidate in target.rglob("*") if candidate.is_file())
-    shutil.rmtree(target)
-    return removed
+    return cleanup_media_directory(db, MEDIA, wid, output_dir)
 
 
 async def llm(messages: list[dict[str, str]], settings: dict[str, Any], request_type: str = "文稿生成") -> str | None:
-    if not settings.get("api_key"):
-        return None
-    url = settings["api_base"].rstrip("/") + "/chat/completions"
-    payload = {"model": settings["model"], "messages": messages, "temperature": 0.75}
-    log_request(request_type, url, payload)
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
-            json=payload,
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
-
-
-def demo_copy(title: str, author: str, prompt: str, index: int) -> str:
-    angle = prompt or ["把复杂世界重新看清", "一次真诚而克制的阅读分享", "从书页走回自己的生活"][index % 3]
-    byline = f"，{author}写下的" if author else "，这本"
-    return (
-        f"如果一本书能让你在合上它之后，重新看待自己的生活，《{title}》或许就是这样一本书。"
-        f"{byline}作品没有急着给出标准答案，而是沿着“{angle}”这条线索，把那些被我们忽略的细节慢慢照亮。\n\n"
-        "它真正动人的地方，不是观点有多响亮，而是读到某一页时，你忽然发现作者写的也是自己。"
-        "那些犹豫、选择和未说出口的话，都在故事里获得了新的解释。\n\n"
-        f"推荐你读《{title}》。不必赶进度，给它一个安静的晚上，也给自己一次重新整理内心的机会。"
-    )
-
-
-def generated_taxonomy(raw: str | None, title: str) -> tuple[list[str], list[str]]:
-    def cleaned(values: Any, fallbacks: list[str]) -> list[str]:
-        source = values if isinstance(values, list) else []
-        terms = [str(value).strip().lstrip("#").strip().replace(" ", "") for value in source]
-        terms.extend(fallbacks)
-        return [value for value in dict.fromkeys(terms) if value and len(value) <= 30][:8]
-
-    parsed: dict[str, Any] = {}
-    if raw:
-        candidate = raw.strip()
-        if candidate.startswith("```"):
-            candidate = candidate.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        try:
-            value = json.loads(candidate)
-            if isinstance(value, dict):
-                parsed = value
-        except json.JSONDecodeError:
-            parsed = {}
-    safe_title = title.strip().replace(" ", "")[:30]
-    tags = cleaned(parsed.get("tags"), [safe_title, "图书", "阅读", "文学", "书籍分享", "阅读思考", "内容创作", "经典阅读"])
-    topics = cleaned(parsed.get("topics"), [safe_title, "读书", "好书推荐", "读书分享", "阅读", "书单推荐", "一起读书", "每日阅读"])
-    return tags, topics
+    return await complete_chat(messages, settings, request_type, log_request, httpx.AsyncClient)
 
 
 def make_cover(path: Path, title: str, author: str, index: int) -> None:
@@ -790,30 +456,12 @@ def health():
 @app.get("/api/request-logs")
 def request_logs(request_type: str = "", start_time: int | None = None, end_time: int | None = None,
                  page: int = Query(1, ge=1), page_size: int = Query(30, ge=1, le=100)):
-    conditions, params = [], []
-    if request_type:
-        conditions.append("request_type=?"); params.append(request_type)
-    if start_time is not None:
-        conditions.append("created_at>=?"); params.append(start_time)
-    if end_time is not None:
-        conditions.append("created_at<=?"); params.append(end_time)
-    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    with db() as conn:
-        total = conn.execute(f"SELECT COUNT(*) AS count FROM request_logs{where}", params).fetchone()["count"]
-        rows = conn.execute(
-            f"SELECT * FROM request_logs{where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
-            (*params, page_size, (page - 1) * page_size),
-        ).fetchall()
-    items = [{**dict(row), "request_params": json.loads(row["request_params"])} for row in rows]
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    return list_logs(db, request_type, start_time, end_time, page, page_size)
 
 
 @app.delete("/api/request-logs")
 def request_logs_clear():
-    with db() as conn:
-        count = conn.execute("SELECT COUNT(*) AS count FROM request_logs").fetchone()["count"]
-        conn.execute("DELETE FROM request_logs")
-    return {"deleted": count}
+    return {"deleted": clear_logs(db)}
 
 
 @app.get("/api/settings")
@@ -823,13 +471,7 @@ def settings_get():
 
 @app.put("/api/settings")
 def settings_put(value: SettingsPayload):
-    current = get_settings(); incoming = value.model_dump()
-    for key in ("api_key", "azure_speech_key"):
-        if incoming[key] == "••••••••": incoming[key] = current.get(key, "")
-    with db() as conn:
-        conn.execute("INSERT INTO settings(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
-                     (json.dumps(incoming, ensure_ascii=False),))
-    return public_settings(incoming)
+    return public_settings(save_settings(db, get_settings(), value))
 
 
 @app.get("/api/models")
@@ -951,85 +593,42 @@ def voices_download_status():
 
 @app.get("/api/background-music")
 def background_music_list(q: str = "", page: int = Query(1, ge=1), page_size: int = Query(8, ge=1, le=50)):
-    where, params = "", []
-    if q.strip():
-        where = " WHERE name LIKE ? OR category LIKE ?"
-        needle = f"%{q.strip()}%"; params = [needle, needle]
-    with db() as conn:
-        total = conn.execute(f"SELECT COUNT(*) AS count FROM background_music{where}", params).fetchone()["count"]
-        rows = conn.execute(f"SELECT * FROM background_music{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                            (*params, page_size, (page - 1) * page_size)).fetchall()
-    return {"items": [dict(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+    return list_music(db, q, page, page_size)
 
 
 @app.post("/api/background-music", status_code=201)
 def background_music_create(value: BackgroundMusicCreate):
-    music_id, now = uuid.uuid4().hex[:12], int(time.time())
-    with db() as conn:
-        conn.execute("INSERT INTO background_music(id,name,url,category,created_at) VALUES(?,?,?,?,?)",
-                     (music_id, value.name.strip(), value.url, value.category.strip(), now))
-        row = conn.execute("SELECT * FROM background_music WHERE id=?", (music_id,)).fetchone()
-    return dict(row)
+    return create_music(db, value)
 
 
 @app.put("/api/background-music/{music_id}")
 def background_music_update(music_id: str, value: BackgroundMusicCreate):
-    with db() as conn:
-        result = conn.execute("UPDATE background_music SET name=?,url=?,category=? WHERE id=?",
-                              (value.name.strip(), value.url, value.category.strip(), music_id))
-        if result.rowcount == 0:
-            raise HTTPException(404, "背景音乐不存在")
-        row = conn.execute("SELECT * FROM background_music WHERE id=?", (music_id,)).fetchone()
-    return dict(row)
+    return update_music(db, music_id, value)
 
 
 @app.delete("/api/background-music/{music_id}", status_code=204)
 def background_music_delete(music_id: str):
-    with db() as conn:
-        result = conn.execute("DELETE FROM background_music WHERE id=?", (music_id,))
-        if result.rowcount == 0:
-            raise HTTPException(404, "背景音乐不存在")
+    delete_music(db, music_id)
 
 
 @app.get("/api/prompts")
 def prompts_list(kind: str | None = None):
-    if kind and kind not in ("writing", "cover"):
-        raise HTTPException(400, "提示词类型无效")
-    query = "SELECT * FROM prompt_templates"
-    params: tuple[Any, ...] = ()
-    if kind:
-        query += " WHERE kind=?"; params = (kind,)
-    query += " ORDER BY created_at, name"
-    with db() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [prompt_template_row(row) for row in rows]
+    return list_templates(db, kind)
 
 
 @app.post("/api/prompts", status_code=201)
 def prompt_create(value: PromptTemplateCreate):
-    prompt_id, now = uuid.uuid4().hex[:12], int(time.time())
-    with db() as conn:
-        conn.execute("INSERT INTO prompt_templates(id,kind,name,text,created_at,updated_at,image_sizes) VALUES(?,?,?,?,?,?,?)",
-                     (prompt_id, value.kind, value.name.strip(), value.text.strip(), now, now, json.dumps(value.image_sizes)))
-        row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
-    return prompt_template_row(row)
+    return create_template(db, value)
 
 
 @app.put("/api/prompts/{prompt_id}")
 def prompt_update(prompt_id: str, value: PromptTemplateUpdate):
-    with db() as conn:
-        result = conn.execute("UPDATE prompt_templates SET name=?,text=?,image_sizes=?,updated_at=? WHERE id=?",
-                              (value.name.strip(), value.text.strip(), json.dumps(value.image_sizes), int(time.time()), prompt_id))
-        if result.rowcount == 0: raise HTTPException(404, "提示词不存在")
-        row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
-    return prompt_template_row(row)
+    return update_template(db, prompt_id, value)
 
 
 @app.delete("/api/prompts/{prompt_id}", status_code=204)
 def prompt_delete(prompt_id: str):
-    with db() as conn:
-        result = conn.execute("DELETE FROM prompt_templates WHERE id=?", (prompt_id,))
-        if result.rowcount == 0: raise HTTPException(404, "提示词不存在")
+    delete_template(db, prompt_id)
 
 
 @app.get("/api/publish/pairing")
@@ -1061,74 +660,17 @@ def publish_extension_download():
 
 @app.get("/api/publish/tasks")
 def publish_tasks_list(platform: str = ""):
-    if platform and platform not in PUBLISH_PLATFORMS:
-        raise HTTPException(400, "不支持该发布平台")
-    with db() as conn:
-        query = ("SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
-                 "JOIN workflows ON workflows.id=publish_tasks.workflow_id ")
-        params: tuple[str, ...] = ()
-        if platform:
-            query += "WHERE platform=? "; params = (platform,)
-        rows = conn.execute(query + "ORDER BY created_at DESC", params).fetchall()
-    return [publish_task_row(row) for row in rows]
+    return list_tasks(db, platform, PUBLISH_PLATFORMS)
 
 
 @app.post("/api/publish/tasks", status_code=201)
 def publish_task_create(value: PublishTaskCreate):
-    if value.platform != "kuaishou" and not value.title.strip():
-        raise HTTPException(422, "该平台需要作品标题")
-    with db() as conn:
-        workflow_record = conn.execute("SELECT * FROM workflows WHERE id=?", (value.workflow_id,)).fetchone()
-        if not workflow_record:
-            raise HTTPException(404, "作品不存在")
-        workflow = workflow_row(workflow_record)
-        videos = {asset.get("url") for asset in workflow.get("videos", []) if asset.get("url")}
-        cover_assets = {asset.get("url"): asset for asset in workflow.get("covers", []) if asset.get("url")}
-        video_url = value.video_url or next(iter(videos), "")
-        if not video_url:
-            raise HTTPException(422, "该作品还没有可发布的视频")
-        if video_url not in videos:
-            raise HTTPException(422, "视频不属于当前作品")
-        if any(cover_url not in cover_assets for cover_url in value.cover_urls):
-            raise HTTPException(422, "封面不属于当前作品")
-        selected_covers = [
-            {key: cover_assets[url].get(key, "") for key in ("url", "image_ratio", "resolution", "prompt_name")}
-            for url in value.cover_urls
-        ]
-        unsupported_ratios = [cover["image_ratio"] or "未记录" for cover in selected_covers if cover["image_ratio"] not in {"3:4", "4:3"}]
-        if value.platform in {"douyin", "kuaishou"} and unsupported_ratios:
-            platform_label = {"douyin": "抖音", "kuaishou": "快手"}[value.platform]
-            raise HTTPException(422, f"{platform_label}封面只支持原图直传3:4或4:3，不能使用：{', '.join(unsupported_ratios)}")
-        topics = value.topics or workflow.get("topics", [])
-        topic_limit = {"kuaishou": 4, "douyin": 5}.get(value.platform)
-        if topic_limit is not None:
-            topics = topics[:topic_limit]
-        tags = value.tags or workflow.get("tags", [])
-        if value.platform == "bilibili":
-            tags = tags[:10]
-        cover_url = selected_covers[0]["url"] if selected_covers else ""
-        task_id, now = uuid.uuid4().hex[:16], int(time.time())
-        conn.execute(
-            "INSERT INTO publish_tasks(id,workflow_id,platform,status,title,description,tags,topics,video_url,cover_url,covers,created_at,updated_at,error) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (task_id, value.workflow_id, value.platform, "prepared", value.title.strip(), value.description.strip(),
-             json.dumps(tags, ensure_ascii=False), json.dumps(topics, ensure_ascii=False), video_url, cover_url,
-             json.dumps(selected_covers, ensure_ascii=False), now, now, ""),
-        )
-        row = conn.execute(
-            "SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
-            "JOIN workflows ON workflows.id=publish_tasks.workflow_id WHERE publish_tasks.id=?",
-            (task_id,),
-        ).fetchone()
-    return publish_task_row(row)
+    return create_task(db, value)
 
 
 @app.delete("/api/publish/tasks/{task_id}", status_code=204)
 def publish_task_delete(task_id: str):
-    with db() as conn:
-        result = conn.execute("DELETE FROM publish_tasks WHERE id=?", (task_id,))
-        if result.rowcount == 0:
-            raise HTTPException(404, "发布任务不存在")
+    delete_task(db, task_id)
 
 
 @app.get("/api/publish/extension/tasks/next")

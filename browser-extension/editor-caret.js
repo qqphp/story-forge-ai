@@ -1,4 +1,3 @@
-/* global InputEvent, getSelection */
 globalThis.StoryForgeEditorCaret={
   placeAtEnd(element){
     element.focus();

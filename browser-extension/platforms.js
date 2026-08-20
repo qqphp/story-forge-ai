@@ -1,4 +1,3 @@
-/* global URL */
 globalThis.StoryForgePlatforms={
   douyin:{label:"抖音",mark:"音",uploadUrl:"https://creator.douyin.com/creator-micro/content/upload"},
   kuaishou:{label:"快手",mark:"快",uploadUrl:"https://cp.kuaishou.com/article/publish/video"},

@@ -18,7 +18,6 @@
   function isUsable(element){if(!element)return false;const style=getComputedStyle(element);return !element.disabled&&style.display!=="none"&&style.visibility!=="hidden"}
   function findVideoInput(){const candidates=[...document.querySelectorAll('input[type="file"]')];return candidates.find(input=>/video|mp4/i.test(input.accept||""))||candidates[0]||null}
   function exactTextElements(text,root=document){return [...root.querySelectorAll("button,div,span,p")].filter(element=>element.id!=="storyforge-publish-assistant"&&!element.closest("#storyforge-publish-assistant")&&element.textContent?.trim()===text&&isUsable(element))}
-  function clickExactText(text,root=document){const element=exactTextElements(text,root)[0];if(!element)return false;element.click();return true}
   function imageInputsNear(element,boundary){
     let container=element;
     for(let depth=0;container&&depth<7;depth+=1,container=container.parentElement){const inputs=[...container.querySelectorAll('input[type="file"]')].filter(candidate=>/image|png|jpe?g/i.test(candidate.accept||""));if(inputs.length)return inputs;if(container===boundary)break}
