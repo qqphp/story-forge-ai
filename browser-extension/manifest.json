@@ -20,13 +20,13 @@
   "content_scripts": [
     {
       "matches": ["https://creator.douyin.com/*"],
-      "js": ["platforms.js", "cover-upload.js", "editor-caret.js", "content.js"],
+      "js": ["platforms.js", "runtime-api.js", "publish-panel.js", "cover-upload.js", "editor-caret.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://cp.kuaishou.com/*", "https://member.bilibili.com/*", "https://creator.xiaohongshu.com/*", "https://baijiahao.baidu.com/*"],
-      "js": ["platforms.js", "cover-upload.js", "multi-platform.js"],
+      "js": ["platforms.js", "runtime-api.js", "publish-panel.js", "cover-upload.js", "multi-platform.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

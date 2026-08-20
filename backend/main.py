@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
 import hashlib
-import html
 import json
-import math
 import os
 import secrets
-import subprocess
 import time
 import uuid
-import wave
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -23,7 +18,6 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, ImageDraw, ImageFont
 from dotenv import load_dotenv
 from backend.modules.contracts import (
     BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
@@ -37,13 +31,24 @@ from backend.modules.media.storage import (
     create_workflow_media_dir as create_media_directory,
     workflow_media_dir as resolve_media_directory,
 )
-from backend.modules.workflows.content import demo_copy, generated_taxonomy
 from backend.modules.prompts.service import create_template, delete_template, list_templates, update_template
 from backend.modules.media.music import create_music, delete_music, list_music, update_music
 from backend.modules.request_logs.service import clear_logs, list_logs, record_log
 from backend.modules.settings.service import load_settings, save_settings, to_public
-from backend.modules.publishing.service import create_task, delete_task, list_tasks
+from backend.modules.publishing.service import create_task, delete_task, list_tasks, resolve_task_media, update_task_status
 from backend.integrations.chat import complete_chat
+from backend.integrations.cover import generate_cover as generate_external_cover, make_local_cover
+from backend.integrations.speech import (
+    audio_extension as speech_audio_extension,
+    build_ssml,
+    make_demo_wav as make_demo_audio,
+    synthesize,
+)
+from backend.integrations.video import video_command as build_video_command
+from backend.modules.workflows.application import create_workflow, delete_workflow, queue_retry
+from backend.modules.workflows.executor import execute_workflow
+from backend.modules.workflows.repository import get_workflow, list_workflows, save_workflow as persist_workflow
+from backend.api.system import build_router as build_system_router
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLISH_PLATFORMS = ("douyin", "kuaishou", "bilibili", "xiaohongshu", "baijiahao")
@@ -140,20 +145,11 @@ def log_request(request_type: str, request_url: str, request_params: dict[str, A
     record_log(db, request_type, request_url, request_params)
 
 
-def save_workflow(wid: str, *, status: str | None = None, step: int | None = None,
-                  progress: int | None = None, payload_update: dict[str, Any] | None = None) -> None:
-    with db() as conn:
-        row = conn.execute("SELECT * FROM workflows WHERE id=?", (wid,)).fetchone()
-        if not row:
-            return
-        payload = json.loads(row["payload"])
-        payload.update(payload_update or {})
-        conn.execute(
-            "UPDATE workflows SET status=?,step=?,progress=?,updated_at=?,payload=? WHERE id=?",
-            (status or row["status"], step if step is not None else row["step"],
-             progress if progress is not None else row["progress"], int(time.time()),
-             json.dumps(payload, ensure_ascii=False), wid),
-        )
+app.include_router(build_system_router(db, get_settings, public_settings, save_settings, list_logs, clear_logs))
+
+
+def save_workflow(wid: str, **changes: Any) -> None:
+    persist_workflow(db, wid, **changes)
 
 
 def create_workflow_media_dir() -> tuple[str, Path]:
@@ -173,71 +169,19 @@ async def llm(messages: list[dict[str, str]], settings: dict[str, Any], request_
 
 
 def make_cover(path: Path, title: str, author: str, index: int) -> None:
-    palettes = [(22, 38, 53), (72, 52, 45), (31, 57, 47)]
-    bg = palettes[index % len(palettes)]
-    image = Image.new("RGB", (1080, 1440), bg)
-    draw = ImageDraw.Draw(image)
-    for y in range(1440):
-        f = y / 1440
-        color = tuple(int(c + (235 - c) * f * .22) for c in bg)
-        draw.line((0, y, 1080, y), fill=color)
-    draw.ellipse((660, 80, 1110, 530), fill=(227, 177, 94))
-    draw.rectangle((86, 95, 100, 1330), fill=(227, 177, 94))
-    try:
-        font_big = ImageFont.truetype("C:/Windows/Fonts/msyhbd.ttc", 92)
-        font_small = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 34)
-    except OSError:
-        font_big = font_small = ImageFont.load_default()
-    lines, line = [], ""
-    for char in title:
-        if len(line) >= 8:
-            lines.append(line); line = ""
-        line += char
-    if line: lines.append(line)
-    draw.multiline_text((130, 520), "\n".join(lines), font=font_big, fill=(248, 244, 233), spacing=28)
-    draw.text((135, 1210), author or "STORYFORGE EDITION", font=font_small, fill=(240, 211, 158))
-    image.save(path, "PNG")
+    make_local_cover(path, title, author, index)
 
 
 async def generate_cover(path: Path, title: str, author: str, description: str,
                          prompt: str, index: int, image_ratio: str, settings: dict[str, Any]) -> tuple[bool, str]:
-    """Use an OpenAI-compatible image endpoint when available, with a local fallback."""
-    if settings.get("api_key"):
-        try:
-            url = settings["api_base"].rstrip("/") + "/images/generations"
-            ratio_prompt = f"{prompt}\n\n图片比例：{image_ratio}"
-            payload = {"model": settings.get("image_model", "gpt-image-2"), "n": 1,
-                       "prompt": f"为《{title}》创作无文字的书籍分享封面。作者：{author}。简介：{description}。视觉要求：{ratio_prompt}"}
-            log_request("封面生成", url, payload)
-            async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
-                response = await client.post(
-                    url,
-                    headers={"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()["data"][0]
-                raw = base64.b64decode(data["b64_json"]) if data.get("b64_json") else (await client.get(data["url"])).content
-                path.write_bytes(raw)
-                with Image.open(path) as generated:
-                    return True, f"{generated.width}×{generated.height}"
-        except Exception:
-            pass
-    make_cover(path, title, author, index)
-    with Image.open(path) as generated:
-        return False, f"{generated.width}×{generated.height}"
+    return await generate_external_cover(
+        path, title, author, description, prompt, index, image_ratio, settings,
+        log_request, httpx.AsyncClient, make_cover,
+    )
 
 
 def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
-    rate = 24000
-    with wave.open(str(path), "wb") as out:
-        out.setnchannels(1); out.setsampwidth(2); out.setframerate(rate)
-        frames = bytearray()
-        for i in range(int(rate * seconds)):
-            envelope = min(1, i / 1000, (rate * seconds - i) / 1000)
-            sample = int(2600 * envelope * math.sin(2 * math.pi * (190 + 40 * math.sin(i / rate)) * i / rate))
-            frames += sample.to_bytes(2, "little", signed=True)
-        out.writeframes(frames)
+    make_demo_audio(path, seconds)
 
 
 def speech_ssml(text: str, voice: str, rate: int,
@@ -245,22 +189,7 @@ def speech_ssml(text: str, voice: str, rate: int,
                 background_volume: float = .2,
                 background_fade_in: float = 2,
                 background_fade_out: float = 2) -> str:
-    safe_rate = max(-50, min(100, int(rate)))
-    namespace = ' xmlns="http://www.w3.org/2001/10/synthesis"'
-    if background_music:
-        namespace += ' xmlns:mstts="https://www.w3.org/2001/mstts"'
-    background = ""
-    if background_music:
-        volume = max(0, min(1, float(background_volume)))
-        volume_text = f"{volume:.2f}".rstrip("0").rstrip(".")
-        fade_in = max(0, min(10000, round(float(background_fade_in) * 1000)))
-        fade_out = max(0, min(10000, round(float(background_fade_out) * 1000)))
-        source = html.escape(str(background_music["url"]), quote=True)
-        background = (f'<mstts:backgroundaudio src="{source}" volume="{volume_text}" '
-                      f'fadein="{fade_in}" fadeout="{fade_out}"/>')
-    return (f'<speak version="1.0"{namespace} xml:lang="{html.escape(voice_locale(voice), quote=True)}">{background}'
-            f'<voice name="{html.escape(voice, quote=True)}">'
-            f'<prosody rate="{safe_rate:+d}%">{html.escape(text)}</prosody></voice></speak>')
+    return build_ssml(text, voice, rate, voice_locale, background_music, background_volume, background_fade_in, background_fade_out)
 
 
 async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], output: Path,
@@ -268,221 +197,25 @@ async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], out
                  background_volume: float = .2,
                  background_fade_in: float = 2,
                  background_fade_out: float = 2) -> bool:
-    key = settings.get("azure_speech_key")
-    if not key:
-        make_demo_wav(output.with_suffix(".wav"))
-        return False
-    region = settings.get("azure_speech_region", "eastus")
-    fmt = settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")
-    ssml = speech_ssml(text, voice, rate, background_music, background_volume,
-                       background_fade_in, background_fade_out)
-    url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
-    log_request("配音生成", url, {"voice": voice, "rate": rate, "format": fmt, "text": text,
-                                  "background_music": background_music, "background_volume": background_volume,
-                                  "background_fade_in": background_fade_in, "background_fade_out": background_fade_out})
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            url,
-            headers={"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/ssml+xml",
-                     "X-Microsoft-OutputFormat": fmt, "User-Agent": "StoryForge"},
-            content=ssml.encode("utf-8"),
-        )
-        response.raise_for_status()
-        output.write_bytes(response.content)
-    return True
+    return await synthesize(text, voice, rate, settings, output, speech_ssml, make_demo_wav,
+                            log_request, httpx.AsyncClient, background_music, background_volume,
+                            background_fade_in, background_fade_out)
 
 
 def audio_extension(output_format: str) -> str:
-    if output_format.startswith("amr-"): return ".amr"
-    if output_format.startswith("ogg-"): return ".ogg"
-    if output_format.startswith("webm-"): return ".webm"
-    if "mp3" in output_format: return ".mp3"
-    if "opus" in output_format: return ".opus"
-    if output_format.startswith("raw-"): return ".pcm"
-    if output_format.startswith("g722-"): return ".g722"
-    return ".audio"
-
-
-async def download_background_music(music: dict[str, Any], output_dir: Path) -> Path:
-    suffix = Path(urlparse(music["url"]).path).suffix.lower()
-    if suffix not in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm"):
-        suffix = ".audio"
-    target = output_dir / f"background{suffix}"
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        response = await client.get(music["url"])
-        response.raise_for_status()
-    target.write_bytes(response.content)
-    return target
-
-
-def probe_audio_duration(path: Path) -> float | None:
-    ffprobe = os.getenv("FFPROBE_PATH", "ffprobe")
-    try:
-        result = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
-                                capture_output=True, text=True, timeout=30)
-        return float(result.stdout.strip()) if result.returncode == 0 else None
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return None
-
-
-def video_command(ffmpeg: str, cover: Path, narration: Path, output: Path,
-                  music: Path | None = None, volume: float = .2,
-                  fade_in: float = 2, fade_out: float = 2,
-                  duration: float | None = None) -> list[str]:
-    command = [ffmpeg, "-y", "-loop", "1", "-i", str(cover), "-i", str(narration)]
-    if music:
-        command += ["-stream_loop", "-1", "-i", str(music)]
-        music_filters = [f"volume={max(0, min(1, volume)):.2f}"]
-        if fade_in > 0:
-            music_filters.append(f"afade=t=in:st=0:d={fade_in:g}")
-        if fade_out > 0 and duration:
-            music_filters.append(f"afade=t=out:st={max(0, duration - fade_out):g}:d={min(fade_out, duration):g}")
-        command += ["-filter_complex", f"[2:a]{','.join(music_filters)}[music];[1:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]",
-                    "-map", "0:v", "-map", "[aout]"]
-    command += ["-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "128k",
-                "-pix_fmt", "yuv420p", "-shortest", "-vf", "scale=720:1280,format=yuv420p", str(output)]
-    return command
+    return speech_audio_extension(output_format)
 
 
 async def process_workflow(wid: str) -> None:
-    try:
-        with db() as conn:
-            row = conn.execute("SELECT * FROM workflows WHERE id=?", (wid,)).fetchone()
-        if not row: return
-        item = workflow_row(row); settings = get_settings()
-        output_dir = workflow_media_dir(item["output_dir"])
-        output_dir.mkdir(parents=False, exist_ok=True)
-        title, author = item["book_title"], item["author"]
-        save_workflow(wid, status="running", step=1, progress=8)
-        await asyncio.sleep(.4)
-        description = await llm([
-            {"role": "system", "content": "你是严谨的中文图书编辑。只输出100字左右的书籍简介，不虚构具体事实。"},
-            {"role": "user", "content": f"书名：{title}；作者：{author or '未知'}；版本：{item['edition'] or '未指定'}"},
-        ], settings)
-        if wid in DELETING_WORKFLOWS: return
-        description = description or f"《{title}》是一部值得慢下来阅读的作品。它从人与世界的关系出发，在细节与思考之间，带领读者重新理解选择、成长与生活的意义。"
-        save_workflow(wid, step=2, progress=24, payload_update={"description": description})
+    def cleanup_deleted(workflow_id: str) -> None:
+        cleanup_workflow_media(workflow_id, DELETING_WORKFLOW_DIRS.pop(workflow_id, None))
+        DELETING_WORKFLOWS.discard(workflow_id)
 
-        prompts = [p for p in item.get("writing_prompts", []) if p.get("enabled")]
-        if not prompts: prompts = [{"text": "适合短视频口播，真诚、有洞见", "enabled": True}]
-        originals, polished = [], []
-        for i, prompt in enumerate(prompts):
-            if wid in DELETING_WORKFLOWS: return
-            raw = await llm([
-                {"role": "system", "content": "你是专业读书博主。写一篇500字以内、事实谨慎、适合口播的中文分享稿。"},
-                {"role": "user", "content": f"书名：{title}\n作者：{author}\n简介：{description}\n额外要求：{prompt['text']}"},
-            ], settings)
-            raw = raw or demo_copy(title, author, prompt["text"], i)
-            originals.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": raw})
-            improved = await llm([
-                {"role": "system", "content": "按 Humanizer-zh 的目标优化中文：去除AI腔、空泛排比和过度总结，保留事实和观点，口语自然。只输出优化稿。"},
-                {"role": "user", "content": raw},
-            ], settings)
-            if wid in DELETING_WORKFLOWS: return
-            polished.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": improved or raw.replace("真正动人的地方", "我最喜欢的是")})
-        save_workflow(wid, step=3, progress=45, payload_update={"original_drafts": originals, "polished_drafts": polished})
-
-        save_workflow(wid, step=4, progress=48)
-        voices = item.get("voices") or settings.get("voices") or ["zh-CN-XiaoxiaoNeural"]
-        speech_rate = item.get("speech_rate", settings.get("speech_rate", 0))
-        background_music = item.get("background_music")
-        audio_items = []
-        for di, draft in enumerate(polished):
-            for vi, voice in enumerate(voices):
-                if wid in DELETING_WORKFLOWS: return
-                base = output_dir / f"draft-{di+1}-voice-{vi+1}"
-                target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
-                used_real_speech = await speech(
-                    draft["text"], voice, speech_rate, settings, target,
-                    background_music,
-                    item.get("background_music_volume", .2),
-                    item.get("background_music_fade_in", 2),
-                    item.get("background_music_fade_out", 2),
-                )
-                if wid in DELETING_WORKFLOWS: return
-                actual = target if target.exists() else base.with_suffix(".wav")
-                audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{item['output_dir']}/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
-        save_workflow(wid, step=5, progress=64, payload_update={"audio": audio_items})
-
-        share_text = "\n\n---\n\n".join(draft["text"] for draft in polished)
-        taxonomy_raw = await llm([
-            {"role": "system", "content": "你是中文内容运营编辑。根据给定书籍信息与分享稿生成内容分类。只输出严格JSON，不要Markdown：{\"tags\":[8个简短标签],\"topics\":[8个适合短视频平台的话题词]}。每项不带#，不含空格，不超过15个汉字，去重并与内容高度相关。"},
-            {"role": "user", "content": f"书籍标题：{title}\n书籍简介：{description}\n分享稿：\n{share_text}"},
-        ], settings, "标签话题生成")
-        if wid in DELETING_WORKFLOWS: return
-        tags, topics = generated_taxonomy(taxonomy_raw, title)
-        save_workflow(wid, step=6, progress=74, payload_update={"tags": tags, "topics": topics})
-
-        cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")]
-        if not cover_prompts: cover_prompts = [{"text": "克制、文学感、适合短视频竖版", "enabled": True, "image_sizes": DEFAULT_IMAGE_SIZES}]
-        covers = []
-        cover_index = 0
-        for prompt in cover_prompts:
-            for image_ratio in prompt.get("image_sizes") or DEFAULT_IMAGE_SIZES:
-                if wid in DELETING_WORKFLOWS: return
-                cover_index += 1
-                path = output_dir / f"cover-{cover_index}.png"
-                used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
-                if wid in DELETING_WORKFLOWS: return
-                covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
-        save_workflow(wid, step=7, progress=88, payload_update={"covers": covers})
-
-        videos = []
-        ffmpeg = os.getenv("FFMPEG_PATH", "ffmpeg")
-        for i, audio in enumerate(audio_items):
-            if wid in DELETING_WORKFLOWS: return
-            cover = output_dir / Path(covers[i % len(covers)]["url"]).name
-            audio_path = output_dir / Path(audio["url"]).name
-            out = output_dir / f"video-{i+1}.mp4"
-            cmd = video_command(ffmpeg, cover, audio_path, out)
-            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=180)
-            if result.returncode == 0:
-                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}",
-                               "background_music": background_music.get("name") if background_music else ""})
-        save_workflow(wid, status="completed", step=7, progress=100, payload_update={"videos": videos})
-    except Exception as exc:
-        save_workflow(wid, status="failed", payload_update={"error": str(exc)[:500]})
-    finally:
-        if wid in DELETING_WORKFLOWS:
-            cleanup_workflow_media(wid, DELETING_WORKFLOW_DIRS.pop(wid, None))
-            DELETING_WORKFLOWS.discard(wid)
-
-
-@app.get("/api/health")
-def health():
-    return {"ok": True, "service": "StoryForge AI"}
-
-
-@app.get("/api/request-logs")
-def request_logs(request_type: str = "", start_time: int | None = None, end_time: int | None = None,
-                 page: int = Query(1, ge=1), page_size: int = Query(30, ge=1, le=100)):
-    return list_logs(db, request_type, start_time, end_time, page, page_size)
-
-
-@app.delete("/api/request-logs")
-def request_logs_clear():
-    return {"deleted": clear_logs(db)}
-
-
-@app.get("/api/settings")
-def settings_get():
-    return public_settings(get_settings())
-
-
-@app.put("/api/settings")
-def settings_put(value: SettingsPayload):
-    return public_settings(save_settings(db, get_settings(), value))
-
-
-@app.get("/api/models")
-async def models():
-    settings = get_settings()
-    if not settings.get("api_key"): return {"models": [settings["model"]], "demo": True}
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(settings["api_base"].rstrip("/") + "/models",
-                                    headers={"Authorization": f"Bearer {settings['api_key']}"})
-        response.raise_for_status()
-    return {"models": [m["id"] for m in response.json().get("data", [])], "demo": False}
+    await execute_workflow(wid, db=db, workflow_row=workflow_row, get_settings=get_settings,
+                           media_dir=workflow_media_dir, save=save_workflow,
+                           is_deleting=DELETING_WORKFLOWS.__contains__, cleanup_deleted=cleanup_deleted,
+                           llm=llm, speech=speech, audio_extension=audio_extension,
+                           generate_cover=generate_cover, video_command=build_video_command)
 
 
 async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, str]], bool]:
@@ -695,34 +428,14 @@ def publish_extension_next(platform: str = "douyin", task_id: str = "",
 @app.get("/api/publish/extension/tasks/{task_id}/video")
 def publish_extension_video(task_id: str, x_storyforge_token: str | None = Header(default=None)):
     require_extension_token(x_storyforge_token)
-    with db() as conn:
-        row = conn.execute("SELECT video_url FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "发布任务不存在")
-    prefix = "/media/"
-    if not row["video_url"].startswith(prefix):
-        raise HTTPException(422, "发布视频地址无效")
-    target = (MEDIA / row["video_url"][len(prefix):]).resolve()
-    media_root = MEDIA.resolve()
-    if media_root not in target.parents or not target.is_file():
-        raise HTTPException(404, "发布视频文件不存在")
+    target = resolve_task_media(db, MEDIA, task_id, "video")
     return FileResponse(target, media_type="video/mp4", filename=target.name)
 
 
 @app.get("/api/publish/extension/tasks/{task_id}/cover")
 def publish_extension_cover(task_id: str, x_storyforge_token: str | None = Header(default=None)):
     require_extension_token(x_storyforge_token)
-    with db() as conn:
-        row = conn.execute("SELECT cover_url FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "发布任务不存在")
-    prefix = "/media/"
-    if not row["cover_url"].startswith(prefix):
-        raise HTTPException(422, "发布封面地址无效")
-    target = (MEDIA / row["cover_url"][len(prefix):]).resolve()
-    media_root = MEDIA.resolve()
-    if media_root not in target.parents or not target.is_file():
-        raise HTTPException(404, "发布封面文件不存在")
+    target = resolve_task_media(db, MEDIA, task_id, "cover")
     return FileResponse(target, filename=target.name)
 
 
@@ -730,20 +443,7 @@ def publish_extension_cover(task_id: str, x_storyforge_token: str | None = Heade
 def publish_extension_cover_by_index(task_id: str, cover_index: int,
                                      x_storyforge_token: str | None = Header(default=None)):
     require_extension_token(x_storyforge_token)
-    with db() as conn:
-        row = conn.execute("SELECT covers FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "发布任务不存在")
-    covers = json.loads(row["covers"] or "[]")
-    if cover_index < 0 or cover_index >= len(covers):
-        raise HTTPException(404, "发布封面不存在")
-    cover_url = covers[cover_index].get("url", "")
-    prefix = "/media/"
-    if not cover_url.startswith(prefix):
-        raise HTTPException(422, "发布封面地址无效")
-    target = (MEDIA / cover_url[len(prefix):]).resolve()
-    if MEDIA.resolve() not in target.parents or not target.is_file():
-        raise HTTPException(404, "发布封面文件不存在")
+    target = resolve_task_media(db, MEDIA, task_id, "cover", cover_index)
     return FileResponse(target, filename=target.name)
 
 
@@ -751,85 +451,26 @@ def publish_extension_cover_by_index(task_id: str, cover_index: int,
 def publish_extension_update(task_id: str, value: PublishTaskStatusUpdate,
                              x_storyforge_token: str | None = Header(default=None)):
     require_extension_token(x_storyforge_token)
-    allowed_transitions = {
-        "prepared": {"filling", "failed"},
-        "filling": {"ready", "failed"},
-        "ready": {"completed", "failed"},
-        "failed": {"filling"},
-        "completed": set(),
-        "cancelled": set(),
-    }
-    with db() as conn:
-        current = conn.execute("SELECT status FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
-        if not current:
-            raise HTTPException(404, "发布任务不存在")
-        if value.status not in allowed_transitions[current["status"]]:
-            raise HTTPException(409, f"不能从 {current['status']} 切换到 {value.status}")
-        conn.execute("UPDATE publish_tasks SET status=?,error=?,updated_at=? WHERE id=?",
-                     (value.status, value.error.strip(), int(time.time()), task_id))
-        row = conn.execute("SELECT * FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
-    return publish_task_row(row)
+    return update_task_status(db, task_id, value)
 
 
 @app.get("/api/workflows")
 def workflows_list():
-    with db() as conn:
-        rows = conn.execute("SELECT * FROM workflows ORDER BY created_at DESC").fetchall()
-    return [workflow_row(r) for r in rows]
+    return list_workflows(db)
 
 
 @app.get("/api/workflows/{wid}")
 def workflow_get(wid: str):
-    with db() as conn: row = conn.execute("SELECT * FROM workflows WHERE id=?", (wid,)).fetchone()
-    if not row: raise HTTPException(404, "工作流不存在")
-    return workflow_row(row)
+    return get_workflow(db, wid)
 
 
 @app.delete("/api/workflows/{wid}")
 def workflow_delete(wid: str):
-    with db() as conn:
-        row = conn.execute("SELECT status,payload FROM workflows WHERE id=?", (wid,)).fetchone()
-        if not row: raise HTTPException(404, "工作流不存在")
-        output_dir = json.loads(row["payload"]).get("output_dir")
-        if row["status"] in ("queued", "running"):
-            DELETING_WORKFLOWS.add(wid)
-            if output_dir:
-                DELETING_WORKFLOW_DIRS[wid] = output_dir
-        removed_files = cleanup_workflow_media(wid, output_dir)
-        conn.execute("DELETE FROM workflows WHERE id=?", (wid,))
-    return {"deleted": True, "removed_files": removed_files}
+    return delete_workflow(db, cleanup_workflow_media, DELETING_WORKFLOWS, DELETING_WORKFLOW_DIRS, wid)
 
 
 def create_workflow_record(book: BookCreate, options: WorkflowOptions) -> str:
-    wid, now = uuid.uuid4().hex[:12], int(time.time())
-    with db() as conn:
-        writing_ids = options.writing_prompt_ids
-        cover_ids = options.cover_prompt_ids
-        writing_rows = conn.execute(
-            f"SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='writing' AND id IN ({','.join('?' for _ in writing_ids)})" if writing_ids else
-            "SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='writing' ORDER BY created_at LIMIT 1", writing_ids
-        ).fetchall()
-        cover_rows = conn.execute(
-            f"SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='cover' AND id IN ({','.join('?' for _ in cover_ids)})" if cover_ids else
-            "SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='cover' ORDER BY created_at LIMIT 1", cover_ids
-        ).fetchall()
-        music_row = conn.execute("SELECT id,name,url,category FROM background_music WHERE id=?", (options.background_music_id,)).fetchone() if options.background_music_id else None
-        if options.background_music_id and not music_row:
-            raise HTTPException(422, "选择的背景音乐不存在")
-    output_dir, _ = create_workflow_media_dir()
-    payload = {"output_dir": output_dir,
-               "writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
-               "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "image_sizes": json.loads(r["image_sizes"]), "enabled": True} for r in cover_rows],
-               "voices": [options.voice], "speech_rate": options.speech_rate,
-               "background_music": dict(music_row) if music_row else None,
-               "background_music_volume": options.background_music_volume,
-               "background_music_fade_in": options.background_music_fade_in,
-               "background_music_fade_out": options.background_music_fade_out,
-               "description": "", "tags": [], "topics": [], "original_drafts": [], "polished_drafts": [], "covers": [], "audio": [], "videos": []}
-    with db() as conn:
-        conn.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?,?,?)",
-                     (wid, book.book_title, book.author, book.edition, "queued", 0, 0, now, now, json.dumps(payload, ensure_ascii=False)))
-    return wid
+    return create_workflow(db, create_workflow_media_dir, book, options)
 
 
 @app.post("/api/workflows", status_code=202)
@@ -856,8 +497,6 @@ def workflows_batch_create(value: BatchWorkflowCreate, tasks: BackgroundTasks):
 
 @app.post("/api/workflows/{wid}/retry", status_code=202)
 def workflow_retry(wid: str, tasks: BackgroundTasks):
-    with db() as conn: row = conn.execute("SELECT id FROM workflows WHERE id=?", (wid,)).fetchone()
-    if not row: raise HTTPException(404, "工作流不存在")
-    save_workflow(wid, status="queued", step=0, progress=0, payload_update={"error": ""})
+    queue_retry(db, save_workflow, wid)
     tasks.add_task(process_workflow, wid)
     return {"id": wid, "status": "queued"}

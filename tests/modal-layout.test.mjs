@@ -6,12 +6,12 @@ import test from "node:test";
 
 const appRoot = fileURLToPath(new URL("../app/", import.meta.url));
 const backendRoot = fileURLToPath(new URL("../backend/", import.meta.url));
-const sourceTree = (root, suffix) => readdirSync(root, { recursive: true })
-  .filter(file => file.endsWith(suffix))
+const sourceTree = (root, suffixes) => readdirSync(root, { recursive: true })
+  .filter(file => (Array.isArray(suffixes) ? suffixes : [suffixes]).some(suffix => file.endsWith(suffix)))
   .map(file => readFileSync(join(root, file), "utf8"))
   .join("\n");
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-const page = sourceTree(appRoot, ".tsx");
+const page = sourceTree(appRoot, [".ts", ".tsx"]);
 const backend = sourceTree(backendRoot, ".py");
 
 test("configuration dialogs remain scrollable at high display scaling", () => {

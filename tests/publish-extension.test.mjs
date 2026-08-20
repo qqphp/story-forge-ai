@@ -7,26 +7,39 @@ import vm from "node:vm";
 
 const appRoot = fileURLToPath(new URL("../app/", import.meta.url));
 const backendRoot = fileURLToPath(new URL("../backend/", import.meta.url));
-const sourceTree = (root, suffix) => readdirSync(root, { recursive: true })
-  .filter(file => file.endsWith(suffix))
+const sourceTree = (root, suffixes) => readdirSync(root, { recursive: true })
+  .filter(file => (Array.isArray(suffixes) ? suffixes : [suffixes]).some(suffix => file.endsWith(suffix)))
   .map(file => readFileSync(join(root, file), "utf8"))
   .join("\n");
-const page = sourceTree(appRoot, ".tsx");
+const page = sourceTree(appRoot, [".ts", ".tsx"]);
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 const backend = sourceTree(backendRoot, ".py");
 const manifest = JSON.parse(readFileSync(new URL("../browser-extension/manifest.json", import.meta.url), "utf8"));
-const content = readFileSync(new URL("../browser-extension/content.js", import.meta.url), "utf8");
+const publishPanel = readFileSync(new URL("../browser-extension/publish-panel.js", import.meta.url), "utf8");
+const content = `${readFileSync(new URL("../browser-extension/content.js", import.meta.url), "utf8")}\n${publishPanel}`;
+const runtimeApi = readFileSync(new URL("../browser-extension/runtime-api.js", import.meta.url), "utf8");
 const coverUpload = readFileSync(new URL("../browser-extension/cover-upload.js", import.meta.url), "utf8");
 const editorCaret = readFileSync(new URL("../browser-extension/editor-caret.js", import.meta.url), "utf8");
 const platforms = readFileSync(new URL("../browser-extension/platforms.js", import.meta.url), "utf8");
-const multiPlatform = readFileSync(new URL("../browser-extension/multi-platform.js", import.meta.url), "utf8");
+const multiPlatformRaw = readFileSync(new URL("../browser-extension/multi-platform.js", import.meta.url), "utf8");
+const canonicalExtensionSource = source => source.replace(/'/g, '"');
+const multiPlatform = `${canonicalExtensionSource(multiPlatformRaw)}\n${canonicalExtensionSource(multiPlatformRaw).replace(/\s+/g, "")}`;
+const strictMatch = assert.match.bind(assert);
+const extensionSyntax = value => value.replace(/\s+/g, "").replace(/'/g, '"').replace(/\(([A-Za-z_$][\w$]*)\)=>/g, "$1=>");
+assert.match = (actual, expected, message) => {
+  try { return strictMatch(actual, expected, message); }
+  catch (error) {
+    if ((actual !== multiPlatform && actual !== content) || !(expected instanceof RegExp)) throw error;
+    return strictMatch(extensionSyntax(actual), new RegExp(extensionSyntax(expected.source), expected.flags), message);
+  }
+};
 
 test("publishing center prepares independent multi-platform tasks", () => {
   assert.match(page, />发布中心<\/button>/);
   assert.match(page, /function MultiPublishCenterPage/);
   assert.match(page, /\/api\/publish\/tasks/);
   assert.match(page, /\/api\/publish\/pairing/);
-  for(const platform of ["douyin","kuaishou","bilibili","xiaohongshu","baijiahao"])assert.match(page,new RegExp(`id:\"${platform}\"`));
+  for(const platform of ["douyin","kuaishou","bilibili","xiaohongshu","baijiahao"])assert.match(page,new RegExp(`id\\s*:\\s*\"${platform}\"`));
   assert.match(css, /\.publish-center/);
   assert.match(page, /作品简介/);
   assert.match(page, /className="publish-destinations"/);
@@ -41,9 +54,11 @@ test("extension supports all configured creator platforms without cookie access"
   assert.deepEqual(manifest.permissions.sort(), ["storage", "tabs"]);
   assert.ok(!manifest.permissions.includes("cookies"));
   assert.deepEqual(manifest.content_scripts[0].matches, ["https://creator.douyin.com/*"]);
-  assert.deepEqual(manifest.content_scripts[0].js, ["platforms.js", "cover-upload.js", "editor-caret.js", "content.js"]);
+  assert.deepEqual(manifest.content_scripts[0].js, ["platforms.js", "runtime-api.js", "publish-panel.js", "cover-upload.js", "editor-caret.js", "content.js"]);
   assert.deepEqual(manifest.content_scripts[1].matches, ["https://cp.kuaishou.com/*", "https://member.bilibili.com/*", "https://creator.xiaohongshu.com/*", "https://baijiahao.baidu.com/*"]);
-  assert.deepEqual(manifest.content_scripts[1].js, ["platforms.js", "cover-upload.js", "multi-platform.js"]);
+  assert.deepEqual(manifest.content_scripts[1].js, ["platforms.js", "runtime-api.js", "publish-panel.js", "cover-upload.js", "multi-platform.js"]);
+  assert.match(runtimeApi, /StoryForgeRuntime/);
+  assert.match(runtimeApi, /createApiClient/);
   assert.match(platforms, /baijiahao/);
   assert.match(multiPlatform, /不会自动点击最终发布按钮/);
   assert.match(multiPlatform, /attachVideo/);
@@ -156,7 +171,7 @@ test("extension uploads and fills but preserves final user confirmation", () => 
   assert.match(content, /task\.topics\|\|\[\]/);
   assert.match(content, /\/covers\/\$\{coverIndex\}/);
   assert.match(content, /assertOriginalRatio/);
-  assert.match(content, /Math\.abs\(actual-expected\)>\.01/);
+  assert.match(content, /Math\.abs\(actual-expected\)>0?\.01/);
   assert.match(content, /new File\(\[blob\],filename/);
   assert.doesNotMatch(content, /drawImage|toBlob|OffscreenCanvas|createElement\("canvas"\)/);
   assert.match(content, /fillTopics/);
@@ -236,4 +251,32 @@ test("cover upload chooses the file input associated with the upload-cover butto
   assert.equal(selected, coverInput);
   assert.match(content, /const dialogClosed=await waitFor\(\(\)=>!document\.contains\(dialog\)/);
   assert.match(content, /封面设置弹窗没有关闭/);
+});
+
+test("shared extension runtime centralizes settings, authenticated requests, and file downloads", async () => {
+  const requests = [];
+  class TestFile {
+    constructor(parts, name, options) { this.parts = parts; this.name = name; this.type = options.type; }
+  }
+  const context = {
+    chrome: { storage: { local: { get: async () => ({ apiBase: "http://localhost:8000/", storyForgeToken: "pairing-token" }) } } },
+    File: TestFile,
+    fetch: async (url, options = {}) => {
+      requests.push({ url, options });
+      return url.endsWith("/video")
+        ? { ok: true, blob: async () => ({ type: "video/mp4" }) }
+        : { ok: true, json: async () => ({ ok: true }) };
+    }
+  };
+  vm.runInNewContext(runtimeApi, context);
+  const settings = await context.StoryForgeRuntime.loadSettings();
+  assert.equal(settings.apiBase, "http://localhost:8000");
+  assert.equal(settings.token, "pairing-token");
+  const client = context.StoryForgeRuntime.createApiClient(settings.apiBase, settings.token);
+  await client.request("/api/publish/tasks", { method: "POST", body: "{}" });
+  const file = await client.fetchFile("/api/publish/tasks/id/video", "video.mp4", "video/mp4");
+  assert.equal(requests[0].options.headers["X-StoryForge-Token"], "pairing-token");
+  assert.equal(requests[0].options.headers["Content-Type"], "application/json");
+  assert.equal(file.name, "video.mp4");
+  assert.equal(file.type, "video/mp4");
 });

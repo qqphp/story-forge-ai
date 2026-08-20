@@ -5,11 +5,12 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
 
-from backend.modules.contracts import PublishTaskCreate
+from backend.modules.contracts import PublishTaskCreate, PublishTaskStatusUpdate
 from backend.modules.serializers import publish_task_row, workflow_row
 
 
@@ -65,3 +66,56 @@ def delete_task(db: Callable[[], AbstractContextManager[Any]], task_id: str) -> 
     with db() as conn:
         if conn.execute("DELETE FROM publish_tasks WHERE id=?", (task_id,)).rowcount == 0:
             raise HTTPException(404, "发布任务不存在")
+
+
+def resolve_task_media(
+    db: Callable[[], AbstractContextManager[Any]],
+    media_root: Path,
+    task_id: str,
+    kind: str,
+    cover_index: int | None = None,
+) -> Path:
+    """Resolve a task asset while enforcing the media-root boundary."""
+    field = "video_url" if kind == "video" else "cover_url"
+    with db() as conn:
+        row = conn.execute(f"SELECT {field},covers FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "发布任务不存在")
+    if cover_index is not None:
+        covers = json.loads(row["covers"] or "[]")
+        if cover_index < 0 or cover_index >= len(covers):
+            raise HTTPException(404, "发布封面不存在")
+        url = covers[cover_index].get("url", "")
+    else:
+        url = row[field]
+    prefix = "/media/"
+    label = "视频" if kind == "video" else "封面"
+    if not url.startswith(prefix):
+        raise HTTPException(422, f"发布{label}地址无效")
+    target = (media_root / url[len(prefix):]).resolve()
+    if media_root.resolve() not in target.parents or not target.is_file():
+        raise HTTPException(404, f"发布{label}文件不存在")
+    return target
+
+
+def update_task_status(
+    db: Callable[[], AbstractContextManager[Any]], task_id: str, value: PublishTaskStatusUpdate
+) -> dict[str, Any]:
+    allowed_transitions = {
+        "prepared": {"filling", "failed"},
+        "filling": {"ready", "failed"},
+        "ready": {"completed", "failed"},
+        "failed": {"filling"},
+        "completed": set(),
+        "cancelled": set(),
+    }
+    with db() as conn:
+        current = conn.execute("SELECT status FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+        if not current:
+            raise HTTPException(404, "发布任务不存在")
+        if value.status not in allowed_transitions[current["status"]]:
+            raise HTTPException(409, f"不能从 {current['status']} 切换到 {value.status}")
+        conn.execute("UPDATE publish_tasks SET status=?,error=?,updated_at=? WHERE id=?",
+                     (value.status, value.error.strip(), int(time.time()), task_id))
+        row = conn.execute("SELECT * FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+    return publish_task_row(row)

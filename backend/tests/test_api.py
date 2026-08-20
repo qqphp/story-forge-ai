@@ -13,6 +13,7 @@ from PIL import Image
 from fastapi.testclient import TestClient
 
 import backend.main as main
+from backend.modules.workflows import executor
 
 
 class StoryForgeApiTests(unittest.TestCase):
@@ -173,7 +174,7 @@ class StoryForgeApiTests(unittest.TestCase):
         with patch.object(main, "llm", side_effect=fake_llm), \
              patch.object(main, "speech", side_effect=fake_speech), \
              patch.object(main, "generate_cover", side_effect=fake_cover), \
-             patch.object(main.subprocess, "run", return_value=FailedVideo()):
+             patch.object(executor.subprocess, "run", return_value=FailedVideo()):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["step"], 7)
@@ -182,6 +183,36 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(len(workflow["topics"]), 8)
         self.assertEqual(workflow["topics"][0], "西游记")
         self.assertTrue(workflow["covers"])
+
+    def test_workflow_uses_default_cover_size_when_no_cover_template_is_available(self):
+        with main.db() as conn:
+            conn.execute("DELETE FROM prompt_templates WHERE kind='cover'")
+        with patch.object(main, "process_workflow"):
+            created = self.client.post("/api/workflows", json={"book_title": "无封面模板测试"})
+        workflow_id = created.json()["id"]
+
+        async def fake_llm(*_args, **_kwargs):
+            return "简短内容"
+
+        async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
+            target.write_bytes(b"audio")
+            return False
+
+        async def fake_cover(path, *_args):
+            Image.new("RGB", (120, 160), "navy").save(path, "PNG")
+            return False, "120×160"
+
+        class FailedVideo:
+            returncode = 1
+
+        with patch.object(main, "llm", side_effect=fake_llm), \
+             patch.object(main, "speech", side_effect=fake_speech), \
+             patch.object(main, "generate_cover", side_effect=fake_cover), \
+             patch.object(executor.subprocess, "run", return_value=FailedVideo()):
+            asyncio.run(main.process_workflow(workflow_id))
+        workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
+        self.assertEqual(workflow["status"], "completed")
+        self.assertEqual(workflow["covers"][0]["image_ratio"], "2:3")
 
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()
