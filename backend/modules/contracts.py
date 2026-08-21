@@ -80,6 +80,22 @@ class SettingsPayload(BaseModel):
     voice_format: str = "audio-24khz-48kbitrate-mono-mp3"
     voices: list[str] = ["zh-CN-XiaoxiaoNeural"]
     speech_rate: int = Field(default=0, ge=-50, le=100)
+    video_orientation: str = Field(default="portrait", pattern="^(landscape|portrait)$")
+    video_generation_method: str = Field(default="local", pattern="^(local|stock)$")
+    stock_video_provider: str = Field(default="pexels", pattern="^(pexels|pixabay)$")
+    pexels_api_base: str = "https://api.pexels.com/v1/videos/search"
+    pexels_api_key: str = ""
+    pixabay_api_base: str = "https://pixabay.com/api/videos/"
+    pixabay_api_key: str = ""
+
+    @field_validator("pexels_api_base", "pixabay_api_base")
+    @classmethod
+    def require_stock_api_https(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            raise ValueError("无版权视频 API 地址必须使用 https")
+        return value
 
 
 class PublishTaskCreate(BaseModel):

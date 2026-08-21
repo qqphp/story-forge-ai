@@ -101,13 +101,14 @@ export default function Home() {
           <button className={activePage==="prompts"?"active":""} onClick={()=>setActivePage("prompts")}><span>✦</span>提示词库</button>
           <button className={activePage==="models"?"active":""} onClick={()=>setActivePage("models")}><span>AI</span>模型配置</button>
           <button className={activePage==="voice"?"active":""} onClick={()=>setActivePage("voice")}><span>声</span>语音设置</button>
+          <button className={activePage==="video"?"active":""} onClick={()=>setActivePage("video")}><span>影</span>视频设置</button>
           <button className={activePage==="logs"?"active":""} onClick={()=>setActivePage("logs")}><span>录</span>请求日志</button>
         </nav>
         <span className={`side-connection ${connected?"online":""}`}><i/>{connected?"本地服务已连接":"本地服务未连接"}</span>
       </aside>
       <section className="workspace-main">
       <header className="topbar">
-        <div className="page-heading"><b>{{workspace:"创作工作台",publish:"发布中心",prompts:"提示词库",models:"模型配置",voice:"语音设置",logs:"请求日志"}[activePage]}</b><small>本地创作与生成配置中心</small></div>
+        <div className="page-heading"><b>{{workspace:"创作工作台",publish:"发布中心",prompts:"提示词库",models:"模型配置",voice:"语音设置",video:"视频设置",logs:"请求日志"}[activePage]}</b><small>本地创作与生成配置中心</small></div>
         <div className="top-actions">
           <span className={`connection ${connected ? "online" : ""}`}><i />{connected ? "服务已连接" : "演示模式"}</span>
         </div>
@@ -139,6 +140,7 @@ export default function Home() {
       {activePage==="prompts"&&<section className="config-page"><PromptLibraryDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>setToast("提示词库已更新")}/></section>}
       {activePage==="models"&&<section className="config-page"><SettingsDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>{setToast("配置已保存");loadTasks()}}/></section>}
       {activePage==="voice"&&<section className="config-page"><VoiceSettingsDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>setToast("语音配置已保存")}/></section>}
+      {activePage==="video"&&<section className="config-page"><VideoSettingsPage connected={connected} onSaved={()=>setToast("视频配置已保存")}/></section>}
       {activePage==="logs"&&<RequestLogsPage connected={connected} onToast={setToast}/>}
 
       {showCreate && <CreateDialog connected={connected} onClose={() => setShowCreate(false)} onSubmit={createWorkflow} />}
@@ -260,6 +262,30 @@ function SettingsDialog({connected,onClose,onSaved}:{connected:boolean;onClose:(
   useEffect(()=>{if(connected){fetch(`${API}/api/settings`).then(r=>r.json()).then(setForm).catch(()=>{});fetch(`${API}/api/models`).then(r=>r.json()).then(d=>setModels(d.models)).catch(()=>{});}},[connected]);
   const save=async()=>{if(!connected){onSaved();return;}setSaving(true);try{const response=await fetch(`${API}/api/settings`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(form)});if(!response.ok)throw new Error("保存失败");onSaved();}finally{setSaving(false)}};
   return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal config-modal settings-modal"><div className="modal-head"><div><p className="eyebrow">创作引擎</p><h2>模型配置</h2></div><button className="close" onClick={onClose}>×</button></div><nav className="settings-tabs" aria-label="模型配置分类"><button className={settingsTab==="model"?"active":""} onClick={()=>setSettingsTab("model")}><span>AI</span><div><b>OpenAI 兼容接口</b><small>模型与图片生成</small></div></button><button className={settingsTab==="help"?"active":""} onClick={()=>setSettingsTab("help")}><span>?</span><div><b>配置说明</b><small>地址、密钥与加载规则</small></div></button></nav><div className="settings-pane">{settingsTab==="model"?<div className="settings-block"><h3>OpenAI 兼容接口</h3><label>API 地址<input value={form.api_base} onChange={e=>setForm({...form,api_base:e.target.value})}/></label><div className="form-grid model-fields"><label>文案模型{models.length?<ModelSelect models={models} value={form.model} onChange={model=>setForm({...form,model})}/>:<input value={form.model} onChange={e=>setForm({...form,model:e.target.value})}/>}</label><label>图片模型<input value={form.image_model} onChange={e=>setForm({...form,image_model:e.target.value})}/></label><label className="wide">API 密钥<input type="password" value={form.api_key} onChange={e=>setForm({...form,api_key:e.target.value})} placeholder="已优先读取 .env"/></label></div></div>:<section className="config-help"><article><span>01</span><div><b>填写兼容地址</b><p>API 地址应指向 OpenAI 兼容服务的 /v1 根路径。</p></div></article><article><span>02</span><div><b>自动读取模型</b><p>配置密钥后会通过 /models 加载文案模型；图片模型可直接填写服务支持的名称。</p></div></article><article><span>03</span><div><b>本机配置优先</b><p>.env 中的 MODEL_API_BASE、MODEL_API_KEY 与模型名称会优先生效，页面只显示脱敏密钥。</p></div></article></section>}</div><p className="privacy-note">密钥从本机 .env 自动读取，不会写入前端源码。</p><div className="modal-actions"><button className="secondary action-button" onClick={onClose}><span aria-hidden="true">×</span>取消</button><button className="primary action-button" onClick={save} disabled={saving}><span aria-hidden="true">✓</span>{saving?"保存中…":"保存设置"}</button></div></div></div>;
+}
+
+function VideoSettingsPage({connected,onSaved}:{connected:boolean;onSaved:()=>void}) {
+  const [form,setForm]=useState<AppSettings>(defaultSettings); const [saving,setSaving]=useState(false); const [error,setError]=useState(""); const [showApiKey,setShowApiKey]=useState(false);
+  useEffect(()=>{if(connected)fetch(`${API}/api/settings`).then(r=>r.json()).then(setForm).catch(()=>setError("视频设置加载失败"));},[connected]);
+  const provider=form.stock_video_provider; const apiBase=provider==="pexels"?form.pexels_api_base:form.pixabay_api_base; const apiKey=provider==="pexels"?form.pexels_api_key:form.pixabay_api_key;
+  const setProviderField=(field:"base"|"key",value:string)=>setForm(current=>provider==="pexels"?{...current,[field==="base"?"pexels_api_base":"pexels_api_key"]:value}:{...current,[field==="base"?"pixabay_api_base":"pixabay_api_key"]:value});
+  const save=async()=>{if(!connected){onSaved();return;}setSaving(true);setError("");try{const response=await fetch(`${API}/api/settings`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(form)});if(!response.ok){const detail=await response.json().catch(()=>null);throw new Error(detail?.detail?.[0]?.msg||"保存失败");}setForm(await response.json());onSaved();}catch(reason){setError(reason instanceof Error?reason.message:"保存失败");}finally{setSaving(false)}};
+  return <div className="video-settings-page"><div className="page-section-head"><div><p className="eyebrow">VIDEO WORKFLOW</p><h1>视频设置</h1><p>统一控制画面方向和视频素材来源；新启动的工作流会使用这里的配置。</p></div></div>
+    <section className="settings-pane video-settings-pane">
+      <div className="settings-block"><h3>画面方向</h3><p className="setting-explainer">合成时会自动选择同方向封面，并输出对应分辨率。</p><div className="video-option-grid">
+        <label className={form.video_orientation==="landscape"?"selected":""}><input type="radio" name="video-orientation" checked={form.video_orientation==="landscape"} onChange={()=>setForm({...form,video_orientation:"landscape"})}/><span><b>横版 16:9</b><small>输出 1280 × 720，使用 16:9 封面</small></span></label>
+        <label className={form.video_orientation==="portrait"?"selected":""}><input type="radio" name="video-orientation" checked={form.video_orientation==="portrait"} onChange={()=>setForm({...form,video_orientation:"portrait"})}/><span><b>竖版 9:16</b><small>输出 720 × 1280，使用 9:16 封面</small></span></label>
+      </div></div>
+      <div className="settings-block"><h3>生成方式</h3><div className="video-option-grid">
+        <label className={form.video_generation_method==="local"?"selected":""}><input type="radio" name="video-method" checked={form.video_generation_method==="local"} onChange={()=>setForm({...form,video_generation_method:"local"})}/><span><b>本地生成</b><small>使用 FFmpeg 将所选方向封面与配音合成</small></span></label>
+        <label className={form.video_generation_method==="stock"?"selected":""}><input type="radio" name="video-method" checked={form.video_generation_method==="stock"} onChange={()=>setForm({...form,video_generation_method:"stock"})}/><span><b>引用无版权视频</b><small>搜索 3 段 medium 素材并循环至配音结束</small></span></label>
+      </div></div>
+      {form.video_generation_method==="stock"&&<div className="settings-block stock-provider-settings"><h3>无版权视频站点</h3><div className="video-option-grid compact">
+        <label className={provider==="pexels"?"selected":""}><input type="radio" name="stock-provider" checked={provider==="pexels"} onChange={()=>setForm({...form,stock_video_provider:"pexels"})}/><span><b>Pexels</b><small>自然风光视频搜索</small></span></label>
+        <label className={provider==="pixabay"?"selected":""}><input type="radio" name="stock-provider" checked={provider==="pixabay"} onChange={()=>setForm({...form,stock_video_provider:"pixabay"})}/><span><b>Pixabay</b><small>安全搜索的视频素材</small></span></label>
+      </div><div className="stock-credential-panel"><header className="stock-credential-head"><span aria-hidden="true">API</span><div><b>{provider==="pexels"?"Pexels":"Pixabay"} 接口配置</b><small>用于检索和下载 medium 质量的视频素材</small></div><em className={apiKey?"configured":""}>{apiKey?"密钥已配置":"等待配置"}</em></header><div className="stock-api-fields"><label><span>API 地址<small>HTTPS Endpoint</small></span><div className="stock-input-shell"><i aria-hidden="true">址</i><input value={apiBase} onChange={e=>setProviderField("base",e.target.value)} spellCheck={false}/></div></label><label><span>API 密钥<small>{provider==="pexels"?"PEXELS_KEY":"PIXABAY_KEY"}</small></span><div className="stock-input-shell secret"><i aria-hidden="true">钥</i><input type={showApiKey?"text":"password"} value={apiKey} onChange={e=>setProviderField("key",e.target.value)} placeholder={`从 .env 读取或在此填写`}/><button type="button" onClick={()=>setShowApiKey(value=>!value)} aria-label={showApiKey?"隐藏 API 密钥":"显示 API 密钥"}>{showApiKey?"隐藏":"显示"}</button></div></label></div><div className="stock-security-note"><span aria-hidden="true">盾</span><p><b>凭证仅保存在本机</b>密钥优先从 .env 读取并脱敏显示；搜索词由模型根据书籍简介生成，仅使用自然风光、环境与氛围关键词。</p></div></div></div>}
+    </section>{error&&<p className="settings-error" role="alert">{error}</p>}<div className="video-settings-actions"><button className="primary action-button" onClick={save} disabled={saving}><span aria-hidden="true">✓</span>{saving?"保存中…":"保存视频设置"}</button></div>
+  </div>;
 }
 
 function VoiceSettingsDialog({connected,onClose,onSaved}:{connected:boolean;onClose:()=>void;onSaved:()=>void}) {

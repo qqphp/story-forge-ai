@@ -45,6 +45,7 @@ from backend.integrations.speech import (
     synthesize,
 )
 from backend.integrations.video import video_command as build_video_command
+from backend.integrations.stock_video import download_stock_videos
 from backend.modules.workflows.application import create_workflow, delete_workflow, queue_retry
 from backend.modules.workflows.executor import execute_workflow
 from backend.modules.workflows.repository import get_workflow, list_workflows, save_workflow as persist_workflow
@@ -83,6 +84,13 @@ DEFAULT_SETTINGS = {
     "voice_format": "audio-24khz-48kbitrate-mono-mp3",
     "voices": ["zh-CN-XiaoxiaoNeural"],
     "speech_rate": 0,
+    "video_orientation": "portrait",
+    "video_generation_method": "local",
+    "stock_video_provider": "pexels",
+    "pexels_api_base": "https://api.pexels.com/v1/videos/search",
+    "pexels_api_key": "",
+    "pixabay_api_base": "https://pixabay.com/api/videos/",
+    "pixabay_api_key": "",
 }
 
 
@@ -215,7 +223,8 @@ async def process_workflow(wid: str) -> None:
                            media_dir=workflow_media_dir, save=save_workflow,
                            is_deleting=DELETING_WORKFLOWS.__contains__, cleanup_deleted=cleanup_deleted,
                            llm=llm, speech=speech, audio_extension=audio_extension,
-                           generate_cover=generate_cover, video_command=build_video_command)
+                           generate_cover=generate_cover, video_command=build_video_command,
+                           download_stock_videos=download_stock_videos, log_request=log_request)
 
 
 async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, str]], bool]:

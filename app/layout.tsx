@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./features/settings/video-settings.css";
 
 export const metadata: Metadata = {
   title: "砚界 · StoryForge AI",

@@ -44,6 +44,7 @@ test("audio format uses the same contained floating picker", () => {
 test("model and voice configuration are separated", () => {
   assert.match(page, />模型配置<\/button>/);
   assert.match(page, />语音设置<\/button>/);
+  assert.match(page, />视频设置<\/button>/);
   assert.match(page, /<h2>模型配置<\/h2>/);
   assert.match(page, /<b>配置说明<\/b>/);
   assert.match(page, /<h2>语音设置<\/h2>/);
@@ -117,6 +118,8 @@ test("configuration and request logs use standalone sidebar pages", () => {
   assert.match(page, /<RequestLogsPage/);
   assert.match(page, /type="datetime-local"/);
   assert.match(page, /method:"DELETE"/);
+  assert.match(page, /<option value="视频搜索词生成">视频搜索词生成<\/option>/);
+  assert.match(page, /<option value="无版权视频搜索">无版权视频搜索<\/option>/);
   assert.match(css, /\.config-page \.modal-backdrop\{position:static/);
   assert.match(css, /\.config-page \.modal\{[^}]*border:0;[^}]*background:transparent;[^}]*box-shadow:none/);
   assert.match(css, /\.config-page \.modal-head\{display:none\}/);
@@ -141,7 +144,16 @@ test("workspace supports compact mobile navigation and bulk list deletion", () =
   assert.match(page, /Promise\.all\(ids\.map\(id=>fetch/);
   assert.match(css, /\.app-shell\{grid-template-columns:196px/);
   assert.match(css, /\.side-nav\{position:fixed;inset:auto 0(?: 0 0)?/);
-  assert.match(css, /grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
+  assert.match(css, /grid-template-columns:repeat\(7,minmax\(0,1fr\)\)/);
+});
+
+test("video settings configure orientation and royalty-free providers", () => {
+  assert.match(page, /function VideoSettingsPage/);
+  assert.match(page, /横版 16:9/);
+  assert.match(page, /竖版 9:16/);
+  assert.match(page, /引用无版权视频/);
+  assert.match(page, /PEXELS_KEY/);
+  assert.match(page, /PIXABAY_KEY/);
 });
 
 test("cover prompt requires both video cover ratios", () => {

@@ -18,6 +18,8 @@ def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[
     result["image_model"] = os.getenv("IMAGE_MODEL_NAME", result["image_model"])
     result["api_key"] = result.get("api_key") or os.getenv("MODEL_API_KEY", "")
     result["azure_speech_key"] = result.get("azure_speech_key") or os.getenv("AZURE_SPEECH_KEY", "")
+    result["pexels_api_key"] = result.get("pexels_api_key") or os.getenv("PEXELS_KEY", "")
+    result["pixabay_api_key"] = result.get("pixabay_api_key") or os.getenv("PIXABAY_KEY", "")
     return result
 
 
@@ -25,12 +27,14 @@ def to_public(settings: dict[str, Any]) -> dict[str, Any]:
     result = dict(settings)
     result["api_key"] = "••••••••" if result.get("api_key") else ""
     result["azure_speech_key"] = "••••••••" if result.get("azure_speech_key") else ""
+    result["pexels_api_key"] = "••••••••" if result.get("pexels_api_key") else ""
+    result["pixabay_api_key"] = "••••••••" if result.get("pixabay_api_key") else ""
     return result
 
 
 def save_settings(db: Callable[[], AbstractContextManager[Any]], current: dict[str, Any], value: SettingsPayload) -> dict[str, Any]:
     incoming = value.model_dump()
-    for key in ("api_key", "azure_speech_key"):
+    for key in ("api_key", "azure_speech_key", "pexels_api_key", "pixabay_api_key"):
         if incoming[key] == "••••••••":
             incoming[key] = current.get(key, "")
     with db() as conn:

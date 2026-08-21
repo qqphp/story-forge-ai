@@ -10,6 +10,8 @@ from typing import Any
 
 from backend.modules.contracts import DEFAULT_IMAGE_SIZES
 from backend.modules.workflows.content import demo_copy, generated_taxonomy
+from backend.integrations.video import normalize_stock_videos, write_concat_manifest
+from backend.integrations.stock_video import natural_scenery_query
 
 
 async def execute_workflow(
@@ -27,6 +29,8 @@ async def execute_workflow(
     audio_extension: Callable[[str], str],
     generate_cover: Callable[..., Any],
     video_command: Callable[..., list[str]],
+    download_stock_videos: Callable[..., Any],
+    log_request: Callable[[str, str, dict[str, Any]], None],
 ) -> None:
     """Run one workflow while reporting durable progress through ``save``."""
     try:
@@ -102,13 +106,37 @@ async def execute_workflow(
         save(wid, step=7, progress=88, payload_update={"covers": covers})
 
         videos, ffmpeg = [], os.getenv("FFMPEG_PATH", "ffmpeg")
+        orientation = settings.get("video_orientation", "portrait")
+        required_ratio = "16:9" if orientation == "landscape" else "9:16"
+        matching_covers = [cover for cover in covers if cover.get("image_ratio") == required_ratio]
+        if not matching_covers:
+            raise RuntimeError(f"没有可用于{required_ratio}视频的封面，请检查封面提示词图片尺寸")
+        stock_manifest = None
+        if settings.get("video_generation_method", "local") == "stock":
+            provider = settings.get("stock_video_provider", "pexels")
+            search_query = await llm([
+                {"role": "system", "content": "Create one concise English stock-video search query (3-7 words). Use only natural scenery, landscapes, weather, plants, water, architecture, or atmospheric details. Never mention people, persons, faces, characters, crowds, portraits, or human actions. Output only the query."},
+                {"role": "user", "content": f"Book title: {title}\nBook summary: {description}"},
+            ], settings, "视频搜索词生成")
+            search_query = natural_scenery_query((search_query or "serene cinematic natural landscape").strip().strip('"“”'))
+            clips = await download_stock_videos(
+                provider=provider,
+                api_base=settings[f"{provider}_api_base"],
+                api_key=settings.get(f"{provider}_api_key", ""),
+                query=search_query,
+                orientation=orientation,
+                output_dir=output_dir,
+                log_request=log_request,
+            )
+            normalized_clips = await asyncio.to_thread(normalize_stock_videos, ffmpeg, clips, output_dir, orientation)
+            stock_manifest = write_concat_manifest(output_dir / "stock-videos.ffconcat", normalized_clips)
         for i, audio in enumerate(audio_items):
             if is_deleting(wid): return
-            cover, narration = output_dir / Path(covers[i % len(covers)]["url"]).name, output_dir / Path(audio["url"]).name
+            cover, narration = output_dir / Path(matching_covers[i % len(matching_covers)]["url"]).name, output_dir / Path(audio["url"]).name
             out = output_dir / f"video-{i+1}.mp4"
-            result = await asyncio.to_thread(subprocess.run, video_command(ffmpeg, cover, narration, out), capture_output=True, timeout=180)
+            result = await asyncio.to_thread(subprocess.run, video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest), capture_output=True, timeout=180)
             if result.returncode == 0:
-                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}", "background_music": background_music.get("name") if background_music else ""})
+                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}", "background_music": background_music.get("name") if background_music else "", "orientation": orientation, "source": settings.get("stock_video_provider") if stock_manifest else "local"})
         save(wid, status="completed", step=7, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save(wid, status="failed", payload_update={"error": str(exc)[:500]})

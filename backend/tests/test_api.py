@@ -53,10 +53,13 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_settings_masks_secrets(self):
-        payload = {**main.DEFAULT_SETTINGS, "api_key": "secret", "azure_speech_key": "speech"}
+        payload = {**main.DEFAULT_SETTINGS, "api_key": "secret", "azure_speech_key": "speech", "pexels_api_key": "pexels", "pixabay_api_key": "pixabay"}
         response = self.client.put("/api/settings", json=payload)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["api_key"], "••••••••")
+        self.assertEqual(response.json()["pexels_api_key"], "••••••••")
+        self.assertEqual(response.json()["pixabay_api_key"], "••••••••")
+        self.assertEqual(response.json()["video_orientation"], "portrait")
         self.assertEqual(response.json()["speech_rate"], 0)
 
     def test_prompt_template_crud(self):
@@ -155,6 +158,25 @@ class StoryForgeApiTests(unittest.TestCase):
         listing = self.client.get("/api/request-logs", params={"request_type": "标签话题生成"}).json()
         self.assertEqual(listing["total"], 1)
         self.assertEqual(listing["items"][0]["request_params"]["messages"][0]["content"], "生成话题")
+
+    def test_video_search_prompt_generation_is_logged_with_its_own_request_type(self):
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"choices": [{"message": {"content": "misty mountain landscape"}}]}
+
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def post(self, *args, **kwargs): return Response()
+
+        settings = {**main.DEFAULT_SETTINGS, "api_key": "key", "api_base": "https://example.com/v1"}
+        messages = [{"role": "user", "content": "根据《测试书》的简介生成视频搜索词"}]
+        with patch.object(main.httpx, "AsyncClient", return_value=Client()):
+            asyncio.run(main.llm(messages, settings, "视频搜索词生成"))
+        listing = self.client.get("/api/request-logs", params={"request_type": "视频搜索词生成"}).json()
+        self.assertEqual(listing["total"], 1)
+        self.assertEqual(listing["items"][0]["request_url"], "https://example.com/v1/chat/completions")
+        self.assertEqual(listing["items"][0]["request_params"]["messages"], messages)
 
     def test_new_workflow_generates_eight_tags_and_topics_before_covers(self):
         with patch.object(main, "process_workflow"):
