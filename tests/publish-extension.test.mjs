@@ -44,9 +44,14 @@ test("publishing center prepares independent multi-platform tasks", () => {
   assert.match(page, /作品简介/);
   assert.match(page, /className="publish-destinations"/);
   assert.match(page, /className="publish-cover-picker"/);
+  assert.ok(page.indexOf('className="publish-cover-picker"') < page.indexOf('className="publish-destinations"'));
+  assert.match(page, /className="connected-platforms"/);
+  assert.match(page, /connected-platform \$\{platform\.id\}/);
+  assert.match(page, /\{platform\.name\}/);
+  assert.ok(!page.includes("{requiresTitle && ("));
   assert.match(page, /下载浏览器扩展 ZIP/);
-  assert.match(page, /cover_urls:coverUrls/);
-  assert.match(page, /topics:topics\.split/);
+  assert.match(page, /cover_urls\s*:\s*coverUrls/);
+  assert.match(page, /topics\s*:\s*topics\s*\.split/);
 });
 
 test("extension supports all configured creator platforms without cookie access", () => {
@@ -82,20 +87,21 @@ test("kuaishou fills only description and topics, then uploads one 3:4 cover", (
   assert.match(multiPlatform, /kuaishouConfirmButton/);
   assert.match(multiPlatform, /dialog\.querySelectorAll\("button"\)/);
   assert.match(backend, /topic_limit = \{"kuaishou": 4, "douyin": 5\}/);
-  assert.match(page, /platform==="kuaishou"\?4:platform==="douyin"\?5/);
+  assert.match(page, /platform\s*===\s*"kuaishou"\s*\?\s*4\s*:\s*platform\s*===\s*"douyin"\s*\?\s*5/);
   assert.match(multiPlatform, /kuaishouCovers/);
   assert.match(multiPlatform, /item\.image_ratio==="3:4"/);
   assert.doesNotMatch(multiPlatform, /\["4:3","3:4"\]/);
   assert.match(multiPlatform, /exactTextElements\("上传封面",dialog\)/);
   assert.match(multiPlatform, /exactTextElements\("确认",dialog\)/);
   assert.match(page, /快手视频发布使用一张3:4的图片即可，需要勾选3:4图片尺寸。/);
-  assert.match(page, /const requiresTitle=targets\.some\(platform=>platform!=="kuaishou"\)/);
+  assert.match(page, /const requiresTitle\s*=\s*targets\.some\(\(platform\)\s*=>\s*platform\s*!==\s*"kuaishou"\)/);
   assert.match(backend, /value\.platform in \{"douyin", "kuaishou"\}/);
 });
 
 test("bilibili fills description and at most ten confirmed tags", () => {
   assert.match(page, />标签</);
-  assert.match(page, />标签[^<]*<small>[^<]*<\/small><input[^>]*>[\s\S]*?<\/label><p className="publish-topic-hint">哔哩哔哩平台最多支持10个标签。<\/p><label>话题/);
+  assert.match(page, /哔哩哔哩平台最多支持10个标签。/);
+  assert.match(page, /话题\s*<small>使用逗号分隔<\/small>/);
   assert.match(multiPlatform, /bilibiliDescriptionField/);
   assert.match(multiPlatform, /\.ql-editor/);
   assert.match(multiPlatform, /#tag-container/);

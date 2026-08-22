@@ -1,0 +1,99 @@
+.publish-center > .page-section-head {
+  margin-bottom: 16px;
+}
+
+.connected-platforms {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 24px;
+  padding: 12px 14px;
+  border: 1px solid #ddd8ce;
+  border-radius: 11px;
+  background: rgba(255, 253, 249, 0.74);
+  box-shadow: 0 4px 16px rgba(24, 43, 38, 0.045);
+}
+
+.connected-platforms-title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding-right: 16px;
+  border-right: 1px solid #dedad0;
+}
+
+.connected-platforms-title b {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.connected-platforms-title small {
+  color: #9a8170;
+  font-size: 8px;
+}
+
+.connected-platform-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.connected-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px 5px 5px;
+  border: 1px solid #dfdbd2;
+  border-radius: 20px;
+  background: #fff;
+  color: #52615c;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.connected-platform i {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border-radius: 50%;
+  background: #19322e;
+  color: #fff;
+  font-size: 8px;
+  font-style: normal;
+}
+
+.connected-platform.kuaishou i {
+  background: #f15b35;
+}
+
+.connected-platform.bilibili i {
+  background: #fb7299;
+}
+
+.connected-platform.xiaohongshu i {
+  background: #ff2442;
+}
+
+.connected-platform.baijiahao i {
+  background: #3169b3;
+}
+
+@media (max-width: 700px) {
+  .connected-platforms {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .connected-platforms-title {
+    width: 100%;
+    padding: 0 0 9px;
+    border-right: 0;
+    border-bottom: 1px solid #dedad0;
+  }
+}
