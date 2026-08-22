@@ -14,6 +14,7 @@ export type Asset = {
   prompt_name?: string;
   image_ratio?: string;
   resolution?: string;
+  duration?: number;
   draft_id?: string;
 };
 

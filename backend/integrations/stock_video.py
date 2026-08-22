@@ -21,16 +21,24 @@ def natural_scenery_query(value: str) -> str:
 
 def _pexels_items(payload: dict[str, Any], orientation: str) -> list[dict[str, str]]:
     horizontal = orientation == "landscape"
+    target_width, target_height = (1920, 1080) if horizontal else (1080, 1920)
     items: list[dict[str, str]] = []
     for video in payload.get("videos", []):
         if (video.get("width", 0) >= video.get("height", 0)) != horizontal:
             continue
         files = [item for item in video.get("video_files", []) if item.get("link")]
-        hd = [item for item in files if item.get("quality") == "hd"] or files
-        if not hd:
+        full_hd = [
+            item for item in files
+            if item.get("quality") == "hd"
+            and (item.get("width") or 0) >= target_width
+            and (item.get("height") or 0) >= target_height
+        ]
+        if not full_hd:
             continue
-        target_width = 1920 if horizontal else 1080
-        selected = min(hd, key=lambda item: abs((item.get("width") or 0) - target_width))
+        selected = min(
+            full_hd,
+            key=lambda item: abs((item.get("width") or 0) - target_width) + abs((item.get("height") or 0) - target_height),
+        )
         items.append({"id": str(video.get("id", "")), "url": selected["link"]})
     return items
 
@@ -39,9 +47,10 @@ def _pixabay_items(payload: dict[str, Any], orientation: str) -> list[dict[str, 
     horizontal = orientation == "landscape"
     items: list[dict[str, str]] = []
     for video in payload.get("hits", []):
-        source = video.get("videos", {}).get("medium") or {}
+        source = video.get("videos", {}).get("large") or {}
         width, height = source.get("width", 0), source.get("height", 0)
-        if not source.get("url") or ((width >= height) != horizontal):
+        target_width, target_height = (1920, 1080) if horizontal else (1080, 1920)
+        if not source.get("url") or ((width >= height) != horizontal) or width < target_width or height < target_height:
             continue
         items.append({"id": str(video.get("id", "")), "url": source["url"]})
     return items
@@ -52,7 +61,7 @@ async def download_stock_videos(
     output_dir: Path, log_request: Callable[[str, str, dict[str, Any]], None],
     client_factory: Callable[..., Any] = httpx.AsyncClient,
 ) -> list[Path]:
-    """Return three randomly selected medium-quality clips downloaded locally."""
+    """Return three randomly selected clips with at least 1080p source resolution."""
     if not api_key:
         raise RuntimeError(f"未配置 {provider.upper()} API 密钥")
     params: dict[str, Any] = {"query" if provider == "pexels" else "q": query, "per_page": 40}
@@ -61,7 +70,7 @@ async def download_stock_videos(
         params.update(orientation=orientation, size="medium")
         headers["Authorization"] = api_key
     else:
-        params.update(key=api_key, per_page=40, safesearch="true", video_type="film", category="nature")
+        params.update(key=api_key, per_page=40, safesearch="true", video_type="all", category="nature")
     log_request("无版权视频搜索", api_base, {key: value for key, value in params.items() if key != "key"} | {"provider": provider})
     async with client_factory(timeout=60, follow_redirects=True) as client:
         response = await client.get(api_base, params=params, headers=headers)

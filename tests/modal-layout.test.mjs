@@ -151,9 +151,16 @@ test("video settings configure orientation and royalty-free providers", () => {
   assert.match(page, /function VideoSettingsPage/);
   assert.match(page, /横版 16:9/);
   assert.match(page, /竖版 9:16/);
+  assert.match(page, /输出 1920 × 1080/);
+  assert.match(page, /输出 1080 × 1920/);
   assert.match(page, /引用无版权视频/);
   assert.match(page, /PEXELS_KEY/);
   assert.match(page, /PIXABAY_KEY/);
+});
+
+test("video details show encoded resolution and duration", () => {
+  assert.match(page, /分辨率：\{a\.resolution\|\|"未记录"\}/);
+  assert.match(page, /视频时长：\{formatVideoDuration\(a\.duration\)\}/);
 });
 
 test("cover prompt requires both video cover ratios", () => {

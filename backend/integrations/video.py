@@ -1,6 +1,7 @@
 """FFmpeg command construction and media probing."""
 
 import os
+import json
 from pathlib import Path
 import subprocess
 
@@ -19,6 +20,32 @@ def probe_audio_duration(path: Path) -> float | None:
         return None
 
 
+def probe_video_metadata(path: Path) -> tuple[str | None, float | None]:
+    """Read the encoded video resolution and duration with ffprobe."""
+    ffprobe = os.getenv("FFPROBE_PATH", "ffprobe")
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return None, None
+        payload = json.loads(result.stdout)
+        stream = (payload.get("streams") or [{}])[0]
+        width, height = stream.get("width"), stream.get("height")
+        resolution = f"{width} × {height}" if width and height else None
+        raw_duration = (payload.get("format") or {}).get("duration")
+        duration = round(float(raw_duration), 3) if raw_duration is not None else None
+        return resolution, duration
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        return None, None
+
+
 def video_command(
     ffmpeg: str,
     cover: Path,
@@ -32,7 +59,7 @@ def video_command(
     orientation: str = "portrait",
     stock_manifest: Path | None = None,
 ) -> list[str]:
-    width, height = (1280, 720) if orientation == "landscape" else (720, 1280)
+    width, height = (1920, 1080) if orientation == "landscape" else (1080, 1920)
     if stock_manifest:
         command = [ffmpeg, "-y", "-stream_loop", "-1", "-f", "concat", "-safe", "0", "-i", str(stock_manifest), "-i", str(narration)]
     else:
@@ -66,7 +93,7 @@ def write_concat_manifest(path: Path, videos: list[Path]) -> Path:
 
 def normalize_stock_videos(ffmpeg: str, videos: list[Path], output_dir: Path, orientation: str) -> list[Path]:
     """Normalize varying provider clips so FFmpeg's concat demuxer can loop them safely."""
-    width, height = (1280, 720) if orientation == "landscape" else (720, 1280)
+    width, height = (1920, 1080) if orientation == "landscape" else (1080, 1920)
     normalized: list[Path] = []
     for index, source in enumerate(videos, 1):
         target = output_dir / f"stock-normalized-{index}.mp4"

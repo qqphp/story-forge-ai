@@ -10,7 +10,7 @@ from typing import Any
 
 from backend.modules.contracts import DEFAULT_IMAGE_SIZES
 from backend.modules.workflows.content import demo_copy, generated_taxonomy
-from backend.integrations.video import normalize_stock_videos, write_concat_manifest
+from backend.integrations.video import normalize_stock_videos, probe_video_metadata, write_concat_manifest
 from backend.integrations.stock_video import natural_scenery_query
 
 
@@ -136,7 +136,8 @@ async def execute_workflow(
             out = output_dir / f"video-{i+1}.mp4"
             result = await asyncio.to_thread(subprocess.run, video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest), capture_output=True, timeout=180)
             if result.returncode == 0:
-                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}", "background_music": background_music.get("name") if background_music else "", "orientation": orientation, "source": settings.get("stock_video_provider") if stock_manifest else "local"})
+                resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
+                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}", "background_music": background_music.get("name") if background_music else "", "orientation": orientation, "source": settings.get("stock_video_provider") if stock_manifest else "local", "resolution": resolution or ("1920 × 1080" if orientation == "landscape" else "1080 × 1920"), "duration": duration})
         save(wid, status="completed", step=7, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save(wid, status="failed", payload_update={"error": str(exc)[:500]})

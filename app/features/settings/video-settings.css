@@ -223,3 +223,17 @@
     margin: 0 14px 14px;
   }
 }
+
+.video-grid figcaption b,
+.video-grid figcaption span {
+  display: block;
+}
+
+.video-grid figcaption b {
+  margin-bottom: 7px;
+  color: #4f5d58;
+}
+
+.video-grid figcaption span + span {
+  margin-top: 4px;
+}
