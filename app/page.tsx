@@ -14,8 +14,8 @@ import { defaultSettings, speechFormats } from "@/app/features/settings/defaults
 const stages = ["理解书籍", "撰写文案", "自然化优化", "生成配音", "生成标签和话题", "创作封面", "合成视频"];
 
 const seedTasks: Workflow[] = [
-  { id: "sample-1", book_title: "悉达多", author: "赫尔曼·黑塞", edition: "", status: "completed", step: 7, progress: 100, created_at: Math.floor(Date.now()/1000)-6800, description: "一个关于寻找、经历与自我抵达的故事。", tags: ["文学","成长"], topics: ["读书","好书推荐"], original_drafts: [], polished_drafts: [], covers: [], audio: [], videos: [] },
-  { id: "sample-2", book_title: "局外人", author: "阿尔贝·加缪", edition: "上海译文版", status: "running", step: 4, progress: 68, created_at: Math.floor(Date.now()/1000)-900, description: "", original_drafts: [], polished_drafts: [], covers: [], audio: [], videos: [] },
+  { id: "sample-1", book_title: "悉达多", author: "赫尔曼·黑塞", edition: "", status: "completed", step: 7, progress: 100, created_at: 1787364000, description: "一个关于寻找、经历与自我抵达的故事。", tags: ["文学","成长"], topics: ["读书","好书推荐"], original_drafts: [], polished_drafts: [], covers: [], audio: [], videos: [] },
+  { id: "sample-2", book_title: "局外人", author: "阿尔贝·加缪", edition: "上海译文版", status: "running", step: 4, progress: 68, created_at: 1787369400, description: "", original_drafts: [], polished_drafts: [], covers: [], audio: [], videos: [] },
 ];
 
 export default function Home() {

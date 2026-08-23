@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE as API } from "@/app/lib/api";
+import { formatShanghaiDateTime } from "@/app/lib/date";
 import type { PublishPlatform, PublishTask, Workflow } from "@/app/features/shared/types";
 import { publishPlatforms } from "@/app/features/publishing/platforms";
 
@@ -334,7 +335,7 @@ export function MultiPublishCenterPage({ connected, workflows, onToast }: { conn
                   </div>
                 </div>
                 <span className={`publish-status ${task.status}`}>{statusText[task.status] || task.status}</span>
-                <time>{new Date(task.created_at * 1000).toLocaleString("zh-CN")}</time>
+                <time>{formatShanghaiDateTime(task.created_at)}</time>
                 <div className="publish-task-actions">
                   {["prepared", "filling", "failed"].includes(task.status) && (
                     <a href={openUrl(task)} target="_blank" rel="noreferrer">
