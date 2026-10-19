@@ -51,12 +51,12 @@ async def generate_cover(
     fallback: Callable[[Path, str, str, int], None] = make_local_cover,
 ) -> tuple[bool, str]:
     """Use an OpenAI-compatible endpoint, falling back to a local cover."""
-    if settings.get("api_key"):
+    if settings.get("image_api_key") and settings.get("image_model"):
         try:
-            url = settings["api_base"].rstrip("/") + "/images/generations"
+            url = settings["image_api_base"].rstrip("/").removesuffix("/images/generations") + "/images/generations"
             ratio_prompt = f"{prompt}\n\n图片比例：{image_ratio}"
             payload = {
-                "model": settings.get("image_model", "gpt-image-2"),
+                "model": settings["image_model"],
                 "n": 1,
                 "prompt": f"为《{title}》创作无文字的书籍分享封面。作者：{author}。简介：{description}。视觉要求：{ratio_prompt}",
             }
@@ -64,7 +64,7 @@ async def generate_cover(
             async with client_factory(timeout=300, follow_redirects=True) as client:
                 response = await client.post(
                     url,
-                    headers={"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"},
+                    headers={"Authorization": f"Bearer {settings['image_api_key']}", "Content-Type": "application/json"},
                     json=payload,
                 )
                 response.raise_for_status()

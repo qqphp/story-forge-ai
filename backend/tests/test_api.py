@@ -5,12 +5,15 @@ import io
 import unittest
 import zipfile
 import xml.etree.ElementTree as ET
+import httpx
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 
 from fastapi.testclient import TestClient
+from fastapi.staticfiles import StaticFiles
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 import backend.main as main
 from backend.modules.workflows import executor
@@ -36,6 +39,35 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertTrue(self.client.get("/api/health").json()["ok"])
         self.assertEqual(self.client.get("/api/workflows").json(), [])
 
+    def test_pairing_uses_request_origin_and_preserves_existing_state(self):
+        pairing = self.client.get("https://forge.example/api/publish/pairing").json()
+        self.assertEqual(pairing["api_base"], "https://forge.example")
+        marker = main.MEDIA / "preserved.txt"
+        marker.write_text("preserved", encoding="utf8")
+        main.init_db()
+        again = self.client.get("https://forge.example/api/publish/pairing").json()
+        self.assertEqual(again["token"], pairing["token"])
+        self.assertEqual(marker.read_text(encoding="utf8"), "preserved")
+        rotated = self.client.post("https://forge.example/api/publish/pairing/rotate").json()
+        self.assertEqual(rotated["api_base"], "https://forge.example")
+        self.assertNotEqual(rotated["token"], pairing["token"])
+
+    def test_local_media_supports_range_requests(self):
+        path = main.MEDIA / "range-test.mp4"
+        path.write_bytes(b"0123456789")
+        media_route = next(route for route in main.app.routes if getattr(route, "path", "") == "/media")
+        with patch.object(media_route, "app", StaticFiles(directory=main.MEDIA)):
+            response = self.client.get("/media/range-test.mp4", headers={"Range": "bytes=2-5"})
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["content-range"], "bytes 2-5/10")
+        self.assertEqual(response.content, b"2345")
+
+    def test_pairing_respects_https_from_the_trusted_reverse_proxy(self):
+        proxy_app = ProxyHeadersMiddleware(main.app, trusted_hosts=["127.0.0.1"])
+        with TestClient(proxy_app, base_url="http://forge.example", client=("127.0.0.1", 40000)) as client:
+            response = client.get("/api/publish/pairing", headers={"X-Forwarded-Proto": "https"})
+        self.assertEqual(response.json()["api_base"], "https://forge.example")
+
     def test_creator_pages_private_network_preflight_is_allowed(self):
         for origin in ("https://creator.douyin.com", "https://cp.kuaishou.com", "https://member.bilibili.com", "https://creator.xiaohongshu.com", "https://baijiahao.baidu.com"):
             response = self.client.options("/api/publish/extension/tasks/next", headers={
@@ -53,14 +85,155 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_settings_masks_secrets(self):
-        payload = {**main.DEFAULT_SETTINGS, "api_key": "secret", "azure_speech_key": "speech", "pexels_api_key": "pexels", "pixabay_api_key": "pixabay"}
+        payload = {**main.DEFAULT_SETTINGS, "text_api_key": "text-test-key", "image_api_key": "image-test-key", "azure_speech_key": "speech", "pexels_api_key": "pexels", "pixabay_api_key": "pixabay"}
         response = self.client.put("/api/settings", json=payload)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["api_key"], "••••••••")
+        self.assertEqual(response.json()["text_api_key"], "••••••••")
+        self.assertEqual(response.json()["image_api_key"], "••••••••")
+        self.assertNotIn("api_key", response.json())
+        self.assertNotIn("api_base", response.json())
         self.assertEqual(response.json()["pexels_api_key"], "••••••••")
         self.assertEqual(response.json()["pixabay_api_key"], "••••••••")
         self.assertEqual(response.json()["video_orientation"], "portrait")
         self.assertEqual(response.json()["speech_rate"], 0)
+
+    def test_models_and_chat_use_text_address_and_key(self):
+        settings = {
+            **main.DEFAULT_SETTINGS,
+            "text_api_base": "https://text.example/custom/v2/", "text_api_key": "text-test-key",
+            "image_api_base": "https://image.example/v1", "image_api_key": "image-test-key",
+            "model": "text-model",
+        }
+        self.client.put("/api/settings", json=settings)
+        calls = []
+
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"data": [{"id": "text-model"}], "choices": [{"message": {"content": "generated text"}}]}
+
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): pass
+            async def get(self, url, **kwargs): calls.append((url, kwargs)); return Response()
+            async def post(self, url, **kwargs): calls.append((url, kwargs)); return Response()
+
+        with patch.object(main.httpx, "AsyncClient", return_value=Client()):
+            response = self.client.get("/api/models")
+            result = asyncio.run(main.llm([{"role": "user", "content": "test"}], settings))
+        self.assertEqual(response.json(), {"models": ["text-model"], "demo": False})
+        self.assertEqual(result, "generated text")
+        self.assertEqual(calls[0][0], "https://text.example/custom/v2/models")
+        self.assertEqual(calls[1][0], "https://text.example/custom/v2/chat/completions")
+        for _, kwargs in calls:
+            self.assertEqual(kwargs["headers"]["Authorization"], "Bearer text-test-key")
+        self.assertEqual(calls[1][1]["json"]["model"], settings["model"])
+
+    def test_text_requests_do_not_use_image_credentials(self):
+        settings = {**main.DEFAULT_SETTINGS, "image_api_key": "image-test-key"}
+        self.client.put("/api/settings", json=settings)
+        with patch.object(main.httpx, "AsyncClient") as client:
+            response = self.client.get("/api/models")
+            result = asyncio.run(main.llm([], settings))
+        self.assertTrue(response.json()["demo"])
+        self.assertIsNone(result)
+        client.assert_not_called()
+
+    def test_manual_model_fetch_uses_current_input_or_matching_masked_key_without_saving(self):
+        settings = {**main.DEFAULT_SETTINGS, "text_api_key": "stored-text-test-key", "image_api_key": "stored-image-test-key"}
+        self.client.put("/api/settings", json=settings)
+        before = self.client.get("/api/settings").json()
+        calls = []
+
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"data": [{"id": "gpt-image-2"}, {"id": "other-model"}, {"id": "other-model"}, {"id": ""}, {}]}
+
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): pass
+            async def get(self, url, **kwargs): calls.append((url, kwargs)); return Response()
+
+        with patch.object(main.httpx, "AsyncClient", return_value=Client()):
+            for provider, key, expected in (("text", "new-text-test-key", "new-text-test-key"), ("text", "••••••••", "stored-text-test-key"), ("image", "••••••••", "stored-image-test-key")):
+                with self.subTest(provider=provider, masked=key == "••••••••"):
+                    response = self.client.post("/api/models", json={"provider": provider, "api_base": "https://unsaved.example/custom/v2/", "api_key": key})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["models"], ["gpt-image-2", "other-model"])
+                    self.assertEqual(calls[-1][0], "https://unsaved.example/custom/v2/models")
+                    self.assertEqual(calls[-1][1]["headers"]["Authorization"], f"Bearer {expected}")
+        self.assertEqual(self.client.get("/api/settings").json(), before)
+
+    def test_manual_model_fetch_rejects_missing_credentials_and_invalid_requests(self):
+        self.client.put("/api/settings", json=main.DEFAULT_SETTINGS)
+        with patch.object(main.httpx, "AsyncClient") as client:
+            for key in ("", "••••••••"):
+                response = self.client.post("/api/models", json={"provider": "image", "api_base": "https://example.com/v1", "api_key": key})
+                self.assertEqual(response.status_code, 400)
+            for value in ({"provider": "unsupported", "api_base": "https://example.com"}, {"provider": "text", "api_base": "not-a-url"}):
+                self.assertEqual(self.client.post("/api/models", json=value).status_code, 422)
+        client.assert_not_called()
+
+    def test_image_root_and_generation_endpoint_resolve_models_and_generation_correctly(self):
+        raw = io.BytesIO()
+        Image.new("RGB", (4, 3), "navy").save(raw, "PNG")
+        encoded = base64.b64encode(raw.getvalue()).decode()
+        calls = []
+
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"data": [{"id": "image-test-model", "b64_json": encoded}]}
+
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): pass
+            async def get(self, url, **_): calls.append(("GET", url)); return Response()
+            async def post(self, url, **_): calls.append(("POST", url)); return Response()
+
+        addresses = (
+            ("https://proaiapi.vip/v1", "https://proaiapi.vip/v1"),
+            ("https://proaiapi.vip/v1/images/generations", "https://proaiapi.vip/v1"),
+            ("https://proaiapi.vip/v1/images/generations/", "https://proaiapi.vip/v1"),
+            ("https://proxy.example/custom/v2/images/generations", "https://proxy.example/custom/v2"),
+        )
+        for address, root in addresses:
+            with self.subTest(address=address), patch.object(main.httpx, "AsyncClient", return_value=Client()):
+                response = self.client.post("/api/models", json={"provider": "image", "api_base": address, "api_key": "image-test-key"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["models"], ["image-test-model"])
+                generated, _ = asyncio.run(main.generate_cover(main.MEDIA / "endpoint-cover.png", "测试书", "作者", "简介", "文学感", 0, "4:3", {
+                    **main.DEFAULT_SETTINGS, "image_api_base": address, "image_api_key": "image-test-key", "image_model": "image-test-model",
+                }))
+                self.assertTrue(generated)
+                self.assertEqual(calls[-2:], [("GET", root + "/models"), ("POST", root + "/images/generations")])
+
+    def test_manual_model_fetch_reports_safe_errors_and_handles_empty_lists(self):
+        request = httpx.Request("GET", "https://example.com/models")
+        responses = [
+            (httpx.Response(401, text="private-upstream-test-key", request=request), 502),
+            (httpx.Response(500, text="private-upstream-test-key", request=request), 502),
+            (httpx.Response(200, text="invalid JSON", request=request), 502),
+            (httpx.Response(200, json={"unexpected": []}, request=request), 502),
+            (httpx.Response(200, json={"data": []}, request=request), 200),
+        ]
+        for upstream, expected_status in responses:
+            with self.subTest(status=upstream.status_code, expected=expected_status):
+                client = AsyncMock()
+                client.__aenter__.return_value = client
+                client.get.return_value = upstream
+                with patch.object(main.httpx, "AsyncClient", return_value=client):
+                    response = self.client.post("/api/models", json={"provider": "image", "api_base": "https://example.com", "api_key": "input-test-key"})
+                self.assertEqual(response.status_code, expected_status)
+                self.assertNotIn("input-test-key", response.text)
+                self.assertNotIn("private-upstream-test-key", response.text)
+                if expected_status == 200:
+                    self.assertEqual(response.json()["models"], [])
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.get.side_effect = httpx.ConnectError("input-test-key must not be returned", request=request)
+        with patch.object(main.httpx, "AsyncClient", return_value=client):
+            response = self.client.post("/api/models", json={"provider": "text", "api_base": "https://example.com", "api_key": "input-test-key"})
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn("input-test-key", response.text)
 
     def test_prompt_template_crud(self):
         initial = self.client.get("/api/prompts").json()
@@ -120,16 +293,48 @@ class StoryForgeApiTests(unittest.TestCase):
         class Client:
             async def __aenter__(self): return self
             async def __aexit__(self, *args): pass
-            async def post(self, *args, **kwargs): calls.append(kwargs); return Response()
+            async def post(self, url, **kwargs): calls.append({"url": url, **kwargs}); return Response()
 
         target = main.MEDIA / "ratio-cover.png"
         with patch.object(main.httpx, "AsyncClient", return_value=Client()):
-            generated, resolution = asyncio.run(main.generate_cover(target, "测试书", "作者", "简介", "文学感", 0, "16:9", {"api_base": "https://example.com/v1", "api_key": "key"}))
+            generated, resolution = asyncio.run(main.generate_cover(target, "测试书", "作者", "简介", "文学感", 0, "16:9", {
+                "text_api_base": "https://text.example/v1", "text_api_key": "text-test-key",
+                "image_api_base": "https://image.example/custom/", "image_api_key": "image-test-key",
+                "image_model": "gpt-image-2",
+            }))
         self.assertTrue(generated); self.assertEqual(resolution, "73×41")
+        self.assertEqual(calls[0]["url"], "https://image.example/custom/images/generations")
+        self.assertEqual(calls[0]["headers"]["Authorization"], "Bearer image-test-key")
         self.assertEqual(calls[0]["json"]["model"], "gpt-image-2")
         self.assertNotIn("size", calls[0]["json"])
         self.assertIn("图片比例：16:9", calls[0]["json"]["prompt"])
         self.assertEqual(target.read_bytes(), raw.getvalue())
+
+    def test_missing_image_key_uses_local_cover_even_with_text_key(self):
+        target = main.MEDIA / "local-cover.png"
+
+        def fallback(path, *_): Image.new("RGB", (73, 41), "navy").save(path, "PNG")
+
+        with patch.object(main, "make_cover", side_effect=fallback) as local, patch.object(main.httpx, "AsyncClient") as client:
+            generated, resolution = asyncio.run(main.generate_cover(target, "测试书", "作者", "简介", "文学感", 0, "16:9", {
+                **main.DEFAULT_SETTINGS, "text_api_key": "text-test-key",
+            }))
+        self.assertFalse(generated)
+        self.assertEqual(resolution, "73×41")
+        local.assert_called_once()
+        client.assert_not_called()
+
+    def test_unselected_models_do_not_send_remote_generation_requests(self):
+        target = main.MEDIA / "unselected-model-cover.png"
+        settings = {**main.DEFAULT_SETTINGS, "text_api_key": "text-test-key", "image_api_key": "image-test-key"}
+
+        def fallback(path, *_): Image.new("RGB", (73, 41), "navy").save(path, "PNG")
+
+        with patch.object(main, "make_cover", side_effect=fallback), patch.object(main.httpx, "AsyncClient") as client:
+            self.assertIsNone(asyncio.run(main.llm([], settings)))
+            generated, _ = asyncio.run(main.generate_cover(target, "测试书", "作者", "简介", "文学感", 0, "16:9", settings))
+        self.assertFalse(generated)
+        client.assert_not_called()
 
     def test_request_logs_support_filters_details_and_clear(self):
         main.log_request("文稿生成", "https://example.com/chat", {"model": "test", "messages": [{"content": "文稿"}]})
@@ -152,7 +357,7 @@ class StoryForgeApiTests(unittest.TestCase):
             async def __aexit__(self, *args): pass
             async def post(self, *args, **kwargs): return Response()
 
-        settings = {**main.DEFAULT_SETTINGS, "api_key": "key", "api_base": "https://example.com/v1"}
+        settings = {**main.DEFAULT_SETTINGS, "text_api_key": "key", "text_api_base": "https://example.com/v1", "model": "text-model"}
         with patch.object(main.httpx, "AsyncClient", return_value=Client()):
             asyncio.run(main.llm([{"role": "user", "content": "生成话题"}], settings, "标签话题生成"))
         listing = self.client.get("/api/request-logs", params={"request_type": "标签话题生成"}).json()
@@ -169,7 +374,7 @@ class StoryForgeApiTests(unittest.TestCase):
             async def __aexit__(self, *args): pass
             async def post(self, *args, **kwargs): return Response()
 
-        settings = {**main.DEFAULT_SETTINGS, "api_key": "key", "api_base": "https://example.com/v1"}
+        settings = {**main.DEFAULT_SETTINGS, "text_api_key": "key", "text_api_base": "https://example.com/v1", "model": "text-model"}
         messages = [{"role": "user", "content": "根据《测试书》的简介生成视频搜索词"}]
         with patch.object(main.httpx, "AsyncClient", return_value=Client()):
             asyncio.run(main.llm(messages, settings, "视频搜索词生成"))
@@ -331,7 +536,7 @@ class StoryForgeApiTests(unittest.TestCase):
 
     def test_voice_sample_is_translated_and_cached_by_locale(self):
         async def fake_llm(_messages, _settings): return "Hello, welcome to this smooth and natural AI voice."
-        settings = {**main.DEFAULT_SETTINGS, "api_key": "test"}
+        settings = {**main.DEFAULT_SETTINGS, "text_api_key": "test"}
         with patch.object(main, "llm", side_effect=fake_llm) as mocked:
             first = asyncio.run(main.localized_voice_sample_text("en-US", settings))
             second = asyncio.run(main.localized_voice_sample_text("en-US", settings))
@@ -354,15 +559,17 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(main.audio_extension("raw-24khz-16bit-mono-pcm"), ".pcm")
 
     def test_voices_returns_every_available_locale(self):
+        calls = []
         class Response:
             def raise_for_status(self): pass
             def json(self): return [{"ShortName": "zh-CN-XiaoxiaoNeural"}, {"ShortName": "en-US-JennyNeural"}, {"ShortName": "ja-JP-NanamiNeural"}]
         class Client:
             async def __aenter__(self): return self
             async def __aexit__(self, *_): pass
-            async def get(self, *_args, **_kwargs): return Response()
-        with patch.object(main, "get_settings", return_value={"azure_speech_key": "test", "azure_speech_region": "eastus"}), patch.object(main.httpx, "AsyncClient", return_value=Client()):
+            async def get(self, url, **_kwargs): calls.append(url); return Response()
+        with patch.object(main, "get_settings", return_value={"azure_speech_key": "test", "azure_speech_base": "https://eastus.tts.speech.microsoft.com/"}), patch.object(main.httpx, "AsyncClient", return_value=Client()):
             result = asyncio.run(main.voices())
+        self.assertEqual(calls, ["https://eastus.tts.speech.microsoft.com/cognitiveservices/voices/list"])
         self.assertEqual(result["voices"], ["zh-CN-XiaoxiaoNeural", "en-US-JennyNeural", "ja-JP-NanamiNeural"])
         self.assertEqual([item["short_name"] for item in result["items"]], result["voices"])
 

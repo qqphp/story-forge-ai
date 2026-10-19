@@ -13,11 +13,6 @@
 # testing
 /coverage
 
-# next.js
-/.next/
-/.vinext/
-/out/
-
 # misc
 .DS_Store
 *.pem
@@ -36,11 +31,12 @@ yarn-error.log*
 /data/
 __pycache__/
 *.py[cod]
-
-# vercel
-.vercel
+/.venv/
 
 /dist/
+# Legacy generated directories retained until they can be removed locally.
+/.next/
+/.vinext/
 /.wrangler/
 /outputs/
 /work/

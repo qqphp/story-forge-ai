@@ -1,6 +1,5 @@
-"use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
 export function SearchableVoiceSelect({voices,value,onChange}:{voices:string[];value:string;onChange:(voice:string)=>void}) {
   const [query,setQuery]=useState(""); const [open,setOpen]=useState(false);
@@ -12,10 +11,10 @@ export function VoiceControl({label,voices,value,onChange}:{label:string;voices:
   return <div className="voice-control"><span>{label}</span><SearchableVoiceSelect voices={voices} value={value} onChange={onChange}/></div>;
 }
 
-export function ModelSelect({models,value,onChange}:{models:string[];value:string;onChange:(model:string)=>void}) {
-  const [query,setQuery]=useState(""); const [open,setOpen]=useState(false);
-  const choices=models.filter(model=>model!=="gpt-image-2"&&model.toLowerCase().includes(query.trim().toLowerCase()));
-  return <div className="model-select"><button type="button" className="model-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={()=>setOpen(!open)}><b>{value||"请选择文案模型"}</b><i>{open?"▴":"▾"}</i></button>{open&&<div className="model-dropdown"><div className="model-search"><span>⌕</span><input role="combobox" aria-expanded="true" aria-controls="model-options" value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索模型名称"/></div><div id="model-options" role="listbox" className="model-options">{choices.map(model=><button type="button" role="option" aria-selected={model===value} className={model===value?"selected":""} key={model} onClick={()=>{onChange(model);setOpen(false);setQuery("")}}><span>{model===value?"✓":""}</span><b>{model}</b></button>)}{!choices.length&&<p>没有匹配的模型</p>}</div><small className="model-result">显示 {choices.length} / {models.filter(model=>model!=="gpt-image-2").length} 个模型</small></div>}</div>;
+export function ModelSelect({models,value,onChange,label="模型",disabled=false}:{models:string[];value:string;onChange:(model:string)=>void;label?:string;disabled?:boolean}) {
+  const [query,setQuery]=useState(""); const [open,setOpen]=useState(false); const optionsId=useId();
+  const choices=models.filter(model=>model.toLowerCase().includes(query.trim().toLowerCase()));
+  return <div className="model-select"><button type="button" className="model-trigger" aria-label={`${label}：${value||"未选择"}`} aria-haspopup="listbox" aria-expanded={open&&!disabled} disabled={disabled} onClick={()=>setOpen(!open)}><b>{value||`请选择${label}`}</b><i>{open&&!disabled?"▴":"▾"}</i></button>{open&&!disabled&&<div className="model-dropdown"><div className="model-search"><span>⌕</span><input role="combobox" aria-expanded="true" aria-controls={optionsId} value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索模型名称"/></div><div id={optionsId} role="listbox" aria-label={label} className="model-options">{choices.map(model=><button type="button" role="option" aria-selected={model===value} className={model===value?"selected":""} key={model} onClick={()=>{onChange(model);setOpen(false);setQuery("")}}><span>{model===value?"✓":""}</span><b>{model}</b></button>)}{!choices.length&&<p>没有匹配的模型</p>}</div><small className="model-result">显示 {choices.length} / {models.length} 个模型</small></div>}</div>;
 }
 
 export function FormatSelect({formats,value,onChange}:{formats:string[];value:string;onChange:(format:string)=>void}) {

@@ -1,4 +1,4 @@
-/* global chrome, StoryForgePlatforms */
+/* global chrome, StoryForgePlatforms, StoryForgeRuntime */
 const apiBaseInput = document.querySelector('#apiBase');
 const tokenInput = document.querySelector('#token');
 const platformInput = document.querySelector('#platform');
@@ -7,32 +7,36 @@ const taskNode = document.querySelector('#task');
 const taskTitle = document.querySelector('#taskTitle');
 const taskBook = document.querySelector('#taskBook');
 
-function normalizeBase(value) {
-  return value.trim().replace(/\/$/, '') || 'http://127.0.0.1:8000';
-}
 function setStatus(message, type = '') {
   statusNode.textContent = message;
   statusNode.className = `status ${type}`.trim();
 }
 
-async function checkConnection() {
-  const apiBase = normalizeBase(apiBaseInput.value);
+async function checkConnection(requestAccess = false) {
   const token = tokenInput.value.trim();
   const platform = platformInput.value;
   if (!token) {
     setStatus('请填写发布中心显示的配对码', 'error');
     return;
   }
-  setStatus('正在连接本地服务…');
   try {
-    const response = await fetch(`${apiBase}/api/publish/extension/tasks/next?platform=${encodeURIComponent(platform)}`, { headers: { 'X-StoryForge-Token': token } });
-    if (!response.ok) throw new Error(response.status === 401 ? '配对码无效' : '本地服务不可用');
+    const apiBase = StoryForgeRuntime.normalizeBase(apiBaseInput.value);
+    const permission = { origins: [`${new URL(apiBase).origin}/*`] };
+    // Request optional site access directly from the Save button's user gesture.
+    const granted = await (requestAccess
+      ? chrome.permissions.request(permission)
+      : chrome.permissions.contains(permission));
+    if (!granted) throw new Error(requestAccess ? '未获得服务访问授权，连接配置未保存' : '请点击“保存并检测”授权此服务地址');
+    setStatus('正在连接服务…');
+    const response = await fetch(`${apiBase}/api/publish/extension/tasks/next?platform=${encodeURIComponent(platform)}`, { credentials: 'omit', headers: { 'X-StoryForge-Token': token } });
+    if (!response.ok) throw new Error(response.status === 401 ? '配对码无效' : '服务不可用');
+    const data = await response.json();
     await chrome.storage.local.set({
       apiBase,
       storyForgeToken: token,
       storyForgePlatform: platform
     });
-    const data = await response.json();
+    apiBaseInput.value = apiBase;
     setStatus('已连接 StoryForge', 'ok');
     if (data.task) {
       taskNode.hidden = false;
@@ -47,23 +51,24 @@ async function checkConnection() {
   }
 }
 
-document.querySelector('#save').addEventListener('click', checkConnection);
+document.querySelector('#save').addEventListener('click', () => void checkConnection(true));
 platformInput.addEventListener('change', () => void checkConnection());
 document.querySelector('#open').addEventListener('click', async () => {
-  const { apiBase, storyForgeToken } = await chrome.storage.local.get(['apiBase', 'storyForgeToken']);
   const platform = platformInput.value;
-  if (!storyForgeToken) {
-    setStatus('请先保存并检测连接', 'error');
-    return;
-  }
   try {
-    const response = await fetch(`${normalizeBase(apiBase)}/api/publish/extension/tasks/next?platform=${encodeURIComponent(platform)}`, { headers: { 'X-StoryForge-Token': storyForgeToken } });
+    const { apiBase, token } = await StoryForgeRuntime.loadSettings();
+    if (!token) throw new Error('请先保存并检测连接');
+    if (!await chrome.permissions.contains({ origins: [`${new URL(apiBase).origin}/*`] })) {
+      throw new Error('请点击“保存并检测”授权此服务地址');
+    }
+    const client = StoryForgeRuntime.createApiClient(apiBase, token);
+    const response = await client.request(`/api/publish/extension/tasks/next?platform=${encodeURIComponent(platform)}`);
     const data = await response.json();
     await chrome.tabs.create({
       url: StoryForgePlatforms.openUrl(platform, data.task?.id || '')
     });
-  } catch {
-    setStatus('无法读取待发布任务', 'error');
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : '无法读取待发布任务', 'error');
   }
 });
 

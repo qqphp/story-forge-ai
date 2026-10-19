@@ -53,6 +53,14 @@ test("model and voice configuration are separated", () => {
   assert.match(page, /<b>背景音乐<\/b>/);
 });
 
+test("model configuration groups credentials before manual model selection", () => {
+  assert.match(page, /form-grid model-api-fields/);
+  assert.match(page, /model-picker-row/);
+  assert.match(page, /获取模型/);
+  assert.match(page, /获取中…/);
+  assert.doesNotMatch(page, /文案模型/);
+});
+
 test("voice center provides global search preview pagination and offline download", () => {
   assert.match(page, /api\/voices\/\$\{encodeURIComponent\(item\.short_name\)\}\/preview\?locale=/);
   assert.match(page, /api\/voices\/download-all/);
@@ -89,8 +97,11 @@ test("workflow creation supports background music mixing controls", () => {
 
 test("cover ratios are selected as prompts and generated images expose their metadata", () => {
   assert.doesNotMatch(backend, /gpt-image-2-codex/);
-  assert.match(backend, /settings\.get\("image_model", "gpt-image-2"\)/);
+  assert.match(backend, /"model": settings\["image_model"\]/);
   assert.match(backend, /图片比例：\{image_ratio\}/);
+  assert.match(backend, /"provider": "openai_compatible" if used_real_image else "local"/);
+  assert.match(page, /程序会将所选图片比例写入提示词并分别调用图片服务/);
+  assert.doesNotMatch(page, /中转站的 gpt-image-2/);
   assert.match(page, /1\.91:1/);
   assert.match(page, /2\.35:1/);
   assert.match(page, /图片比例/);

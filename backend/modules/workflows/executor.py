@@ -102,7 +102,7 @@ async def execute_workflow(
                 path = output_dir / f"cover-{cover_index}.png"
                 used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
                 if is_deleting(wid): return
-                covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "teamorouter" if used_real_image else "local"})
+                covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
         save(wid, step=7, progress=88, payload_update={"covers": covers})
 
         videos, ffmpeg = [], os.getenv("FFMPEG_PATH", "ffmpeg")

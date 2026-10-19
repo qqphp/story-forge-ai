@@ -1,9 +1,14 @@
 {
   "manifest_version": 3,
   "name": "砚界 · 多平台发布助手",
-  "version": "0.1.0",
-  "description": "连接本机 StoryForge，在抖音创作页上传视频并辅助填写发布信息。",
+  "version": "0.2.0",
+  "description": "连接本机或自有服务器上的 StoryForge，在创作页上传视频并辅助填写多平台发布信息。",
   "permissions": ["storage", "tabs"],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",

@@ -4,6 +4,7 @@ Keeping validation models outside the application entry point makes HTTP
 interfaces explicit and avoids coupling business code to FastAPI setup.
 """
 
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
@@ -70,13 +71,30 @@ class PromptTemplateUpdate(BaseModel):
         return PromptTemplateCreate.validate_image_sizes(values)
 
 
-class SettingsPayload(BaseModel):
-    api_base: str = "https://api.teamorouter.com/v1"
-    model: str = "gpt-5.4-mini"
-    image_model: str = "gpt-image-2"
+class ModelListRequest(BaseModel):
+    provider: Literal["text", "image"]
+    api_base: str
     api_key: str = ""
+
+    @field_validator("api_base")
+    @classmethod
+    def validate_api_base(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            raise ValueError("API 地址应为完整的 http 或 https 服务根地址")
+        return value
+
+
+class SettingsPayload(BaseModel):
+    text_api_base: str = "https://api.teamorouter.com/v1"
+    text_api_key: str = ""
+    image_api_base: str = "https://api.teamorouter.com/v1"
+    image_api_key: str = ""
+    model: str = ""
+    image_model: str = ""
     azure_speech_key: str = ""
-    azure_speech_region: str = "eastus"
+    azure_speech_base: str = "https://eastus.tts.speech.microsoft.com"
     voice_format: str = "audio-24khz-48kbitrate-mono-mp3"
     voices: list[str] = ["zh-CN-XiaoxiaoNeural"]
     speech_rate: int = Field(default=0, ge=-50, le=100)

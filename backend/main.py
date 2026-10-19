@@ -6,15 +6,13 @@ import hashlib
 import json
 import os
 import secrets
-import time
-import uuid
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +20,7 @@ from dotenv import load_dotenv
 from backend.modules.contracts import (
     BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
     PromptTemplateCreate, PromptTemplateUpdate, PublishTaskCreate,
-    PublishTaskStatusUpdate, SettingsPayload, WorkflowCreate, WorkflowOptions,
+    PublishTaskStatusUpdate, WorkflowCreate, WorkflowOptions,
 )
 from backend.modules.serializers import publish_task_row, workflow_row
 from backend.core.database import connection, initialize_schema
@@ -42,6 +40,7 @@ from backend.integrations.speech import (
     audio_extension as speech_audio_extension,
     build_ssml,
     make_demo_wav as make_demo_audio,
+    speech_api_url,
     synthesize,
 )
 from backend.integrations.video import video_command as build_video_command
@@ -75,12 +74,14 @@ def init_db() -> None:
 
 
 DEFAULT_SETTINGS = {
-    "api_base": "https://api.teamorouter.com/v1",
-    "model": "gpt-5.4-mini",
-    "image_model": "gpt-image-2",
-    "api_key": "",
+    "text_api_base": "https://api.teamorouter.com/v1",
+    "text_api_key": "",
+    "image_api_base": "https://api.teamorouter.com/v1",
+    "image_api_key": "",
+    "model": "",
+    "image_model": "",
     "azure_speech_key": "",
-    "azure_speech_region": os.getenv("AZURE_SPEECH_REGION", "eastus"),
+    "azure_speech_base": "https://eastus.tts.speech.microsoft.com",
     "voice_format": "audio-24khz-48kbitrate-mono-mp3",
     "voices": ["zh-CN-XiaoxiaoNeural"],
     "speech_rate": 0,
@@ -233,7 +234,7 @@ async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, st
         names = ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural"]
         return ([{"short_name": name, "locale": "zh-CN", "local_name": name, "display_name": name, "gender": ""} for name in names], True)
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(f"https://{settings['azure_speech_region']}.tts.speech.microsoft.com/cognitiveservices/voices/list",
+        response = await client.get(speech_api_url(settings["azure_speech_base"], "/cognitiveservices/voices/list"),
                                     headers={"Ocp-Apim-Subscription-Key": key})
         response.raise_for_status()
     items = [{"short_name": v["ShortName"], "locale": v.get("Locale", ""), "local_name": v.get("LocalName", ""),
@@ -374,16 +375,16 @@ def prompt_delete(prompt_id: str):
 
 
 @app.get("/api/publish/pairing")
-def publish_pairing():
-    return {"token": extension_pairing_token(), "api_base": "http://127.0.0.1:8000"}
+def publish_pairing(request: Request):
+    return {"token": extension_pairing_token(), "api_base": str(request.base_url).rstrip("/")}
 
 
 @app.post("/api/publish/pairing/rotate")
-def publish_pairing_rotate():
+def publish_pairing_rotate(request: Request):
     token = secrets.token_hex(16)
     with db() as conn:
         conn.execute("UPDATE application_meta SET value=? WHERE key='extension_pairing_token'", (token,))
-    return {"token": token, "api_base": "http://127.0.0.1:8000"}
+    return {"token": token, "api_base": str(request.base_url).rstrip("/")}
 
 
 @app.get("/api/publish/extension/download")

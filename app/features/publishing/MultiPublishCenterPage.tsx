@@ -1,5 +1,4 @@
-"use client";
-/* eslint-disable @next/next/no-img-element, jsx-a11y/label-has-associated-control */
+/* eslint-disable jsx-a11y/label-has-associated-control */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE as API } from "@/app/lib/api";
@@ -19,6 +18,7 @@ export function MultiPublishCenterPage({ connected, workflows, onToast }: { conn
   const [targets, setTargets] = useState<PublishPlatform[]>(["douyin"]);
   const [tasks, setTasks] = useState<PublishTask[]>([]);
   const [pairingToken, setPairingToken] = useState("");
+  const [serviceAddress, setServiceAddress] = useState("");
   const [saving, setSaving] = useState(false);
   const selected = eligible.find((workflow) => workflow.id === workflowId);
   const platformFor = (id: PublishPlatform) => publishPlatforms.find((platform) => platform.id === id)!;
@@ -26,11 +26,16 @@ export function MultiPublishCenterPage({ connected, workflows, onToast }: { conn
     if (!connected) {
       setTasks([]);
       setPairingToken("");
+      setServiceAddress("");
       return;
     }
     const [taskResponse, pairingResponse] = await Promise.all([fetch(`${API}/api/publish/tasks`), fetch(`${API}/api/publish/pairing`)]);
     if (taskResponse.ok) setTasks(await taskResponse.json());
-    if (pairingResponse.ok) setPairingToken((await pairingResponse.json()).token);
+    if (pairingResponse.ok) {
+      const pairing = await pairingResponse.json();
+      setPairingToken(pairing.token);
+      setServiceAddress(pairing.api_base);
+    }
   }, [connected]);
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
@@ -272,7 +277,7 @@ export function MultiPublishCenterPage({ connected, workflows, onToast }: { conn
           <div className="publish-card-head">
             <span>02</span>
             <div>
-              <h2>连接本地扩展</h2>
+              <h2>连接发布扩展</h2>
               <p>一个扩展支持全部平台</p>
             </div>
           </div>
@@ -280,13 +285,24 @@ export function MultiPublishCenterPage({ connected, workflows, onToast }: { conn
             <li>下载并解压下方 ZIP 文件</li>
             <li>在 Chrome/Edge 扩展页开启开发者模式</li>
             <li>选择“加载已解压的扩展程序”，并加载 browser-extension 目录</li>
-            <li>打开扩展，粘贴配对码后选择要发布的平台</li>
+            <li>打开扩展，填写服务地址、配对码和发布平台，点击“保存并检测”授权连接</li>
           </ol>
           <label>
-            本地配对码
+            服务地址
             <div className="pairing-code">
-              <code>{pairingToken || "请先启动本地服务"}</code>
+              <code>{serviceAddress || "请先连接后端服务"}</code>
+              <button aria-label="复制服务地址" disabled={!serviceAddress} onClick={() => {
+                void navigator.clipboard.writeText(serviceAddress);
+                onToast("服务地址已复制");
+              }}>复制</button>
+            </div>
+          </label>
+          <label>
+            扩展配对码
+            <div className="pairing-code">
+              <code>{pairingToken || "请先连接后端服务"}</code>
               <button
+                aria-label="复制扩展配对码"
                 disabled={!pairingToken}
                 onClick={() => {
                   void navigator.clipboard.writeText(pairingToken);

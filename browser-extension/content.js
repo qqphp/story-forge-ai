@@ -100,7 +100,7 @@
     return null;
   }
   async function attachVideo() {
-    showMessage('正在读取本机视频并等待抖音上传控件…');
+    showMessage('正在读取服务端视频并等待抖音上传控件…');
     const input = await waitFor(findVideoInput, 60000);
     if (!input) throw new Error('没有找到抖音视频上传控件，请确认当前位于作品发布页');
     const response = await fetch(`${apiBase}/api/publish/extension/tasks/${task.id}/video`, { headers: { 'X-StoryForge-Token': token } });

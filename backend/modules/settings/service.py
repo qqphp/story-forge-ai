@@ -9,14 +9,40 @@ from typing import Any
 from backend.modules.contracts import SettingsPayload
 
 
+def _speech_base_from_region(region: str, default: str) -> str:
+    value = region.strip()
+    if not value:
+        return default
+    if value.startswith(("http://", "https://")):
+        return value.rstrip("/")
+    return f"https://{value}.tts.speech.microsoft.com"
+
+
 def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[str, Any]) -> dict[str, Any]:
     with db() as conn:
         row = conn.execute("SELECT payload FROM settings WHERE id=1").fetchone()
-    result = defaults | (json.loads(row["payload"]) if row else {})
-    result["api_base"] = os.getenv("MODEL_API_BASE", result["api_base"])
-    result["model"] = os.getenv("MODEL_NAME", result["model"])
-    result["image_model"] = os.getenv("IMAGE_MODEL_NAME", result["image_model"])
-    result["api_key"] = result.get("api_key") or os.getenv("MODEL_API_KEY", "")
+    stored = json.loads(row["payload"]) if row else {}
+    legacy_speech_region = stored.pop("azure_speech_region", None)
+    for provider in ("text", "image"):
+        for legacy_field in ("api_base", "api_key"):
+            field = f"{provider}_{legacy_field}"
+            if field not in stored and legacy_field in stored:
+                stored[field] = stored[legacy_field]
+    stored.pop("api_base", None)
+    stored.pop("api_key", None)
+    result = defaults | stored
+    if "azure_speech_base" not in stored:
+        if legacy_speech_region:
+            result["azure_speech_base"] = _speech_base_from_region(legacy_speech_region, defaults["azure_speech_base"])
+        elif os.getenv("AZURE_SPEECH_BASE"):
+            result["azure_speech_base"] = os.environ["AZURE_SPEECH_BASE"]
+        elif os.getenv("AZURE_SPEECH_REGION"):
+            result["azure_speech_base"] = _speech_base_from_region(os.environ["AZURE_SPEECH_REGION"], defaults["azure_speech_base"])
+    for field in ("text_api_base", "text_api_key", "image_api_base", "image_api_key"):
+        if field not in stored:
+            result[field] = os.getenv(field.upper(), defaults[field])
+    result["model"] = stored.get("model", os.getenv("MODEL_NAME", defaults["model"]))
+    result["image_model"] = stored.get("image_model", os.getenv("IMAGE_MODEL_NAME", defaults["image_model"]))
     result["azure_speech_key"] = result.get("azure_speech_key") or os.getenv("AZURE_SPEECH_KEY", "")
     result["pexels_api_key"] = result.get("pexels_api_key") or os.getenv("PEXELS_KEY", "")
     result["pixabay_api_key"] = result.get("pixabay_api_key") or os.getenv("PIXABAY_KEY", "")
@@ -25,7 +51,8 @@ def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[
 
 def to_public(settings: dict[str, Any]) -> dict[str, Any]:
     result = dict(settings)
-    result["api_key"] = "••••••••" if result.get("api_key") else ""
+    result["text_api_key"] = "••••••••" if result.get("text_api_key") else ""
+    result["image_api_key"] = "••••••••" if result.get("image_api_key") else ""
     result["azure_speech_key"] = "••••••••" if result.get("azure_speech_key") else ""
     result["pexels_api_key"] = "••••••••" if result.get("pexels_api_key") else ""
     result["pixabay_api_key"] = "••••••••" if result.get("pixabay_api_key") else ""
@@ -34,7 +61,7 @@ def to_public(settings: dict[str, Any]) -> dict[str, Any]:
 
 def save_settings(db: Callable[[], AbstractContextManager[Any]], current: dict[str, Any], value: SettingsPayload) -> dict[str, Any]:
     incoming = value.model_dump()
-    for key in ("api_key", "azure_speech_key", "pexels_api_key", "pixabay_api_key"):
+    for key in ("text_api_key", "image_api_key", "azure_speech_key", "pexels_api_key", "pixabay_api_key"):
         if incoming[key] == "••••••••":
             incoming[key] = current.get(key, "")
     with db() as conn:

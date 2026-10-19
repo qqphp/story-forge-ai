@@ -9,6 +9,10 @@ from urllib.parse import urlparse
 import wave
 
 
+def speech_api_url(base: str, endpoint: str) -> str:
+    return f"{base.rstrip('/')}/{endpoint.lstrip('/')}"
+
+
 def make_demo_wav(path: Path, seconds: float = 3.0) -> None:
     rate = 24000
     with wave.open(str(path), "wb") as out:
@@ -88,10 +92,10 @@ async def synthesize(
     if not key:
         make_fallback(output.with_suffix(".wav"))
         return False
-    region = settings.get("azure_speech_region", "eastus")
+    base = settings.get("azure_speech_base", "https://eastus.tts.speech.microsoft.com")
     fmt = settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")
     ssml = build_ssml(text, voice, rate, background_music, background_volume, background_fade_in, background_fade_out)
-    url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+    url = speech_api_url(base, "/cognitiveservices/v1")
     log_request("配音生成", url, {"voice": voice, "rate": rate, "format": fmt, "text": text,
                                   "background_music": background_music, "background_volume": background_volume,
                                   "background_fade_in": background_fade_in, "background_fade_out": background_fade_out})

@@ -58,6 +58,8 @@ test("extension supports all configured creator platforms without cookie access"
   assert.equal(manifest.manifest_version, 3);
   assert.deepEqual(manifest.permissions.sort(), ["storage", "tabs"]);
   assert.ok(!manifest.permissions.includes("cookies"));
+  assert.ok(manifest.optional_host_permissions.includes("https://*/*"));
+  assert.ok(!manifest.host_permissions.includes("https://*/*"));
   assert.deepEqual(manifest.content_scripts[0].matches, ["https://creator.douyin.com/*"]);
   assert.deepEqual(manifest.content_scripts[0].js, ["platforms.js", "runtime-api.js", "publish-panel.js", "cover-upload.js", "editor-caret.js", "content.js"]);
   assert.deepEqual(manifest.content_scripts[1].matches, ["https://cp.kuaishou.com/*", "https://member.bilibili.com/*", "https://creator.xiaohongshu.com/*", "https://baijiahao.baidu.com/*"]);
@@ -265,6 +267,7 @@ test("shared extension runtime centralizes settings, authenticated requests, and
     constructor(parts, name, options) { this.parts = parts; this.name = name; this.type = options.type; }
   }
   const context = {
+    URL,
     chrome: { storage: { local: { get: async () => ({ apiBase: "http://localhost:8000/", storyForgeToken: "pairing-token" }) } } },
     File: TestFile,
     fetch: async (url, options = {}) => {
