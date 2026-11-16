@@ -3,7 +3,6 @@ import asyncio
 import base64
 import io
 import unittest
-import zipfile
 import xml.etree.ElementTree as ET
 import httpx
 from pathlib import Path
@@ -13,7 +12,6 @@ from PIL import Image
 
 from fastapi.testclient import TestClient
 from fastapi.staticfiles import StaticFiles
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 import backend.main as main
 from backend.modules.workflows import executor
@@ -39,19 +37,6 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertTrue(self.client.get("/api/health").json()["ok"])
         self.assertEqual(self.client.get("/api/workflows").json(), [])
 
-    def test_pairing_uses_request_origin_and_preserves_existing_state(self):
-        pairing = self.client.get("https://forge.example/api/publish/pairing").json()
-        self.assertEqual(pairing["api_base"], "https://forge.example")
-        marker = main.MEDIA / "preserved.txt"
-        marker.write_text("preserved", encoding="utf8")
-        main.init_db()
-        again = self.client.get("https://forge.example/api/publish/pairing").json()
-        self.assertEqual(again["token"], pairing["token"])
-        self.assertEqual(marker.read_text(encoding="utf8"), "preserved")
-        rotated = self.client.post("https://forge.example/api/publish/pairing/rotate").json()
-        self.assertEqual(rotated["api_base"], "https://forge.example")
-        self.assertNotEqual(rotated["token"], pairing["token"])
-
     def test_local_media_supports_range_requests(self):
         path = main.MEDIA / "range-test.mp4"
         path.write_bytes(b"0123456789")
@@ -61,24 +46,6 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 206)
         self.assertEqual(response.headers["content-range"], "bytes 2-5/10")
         self.assertEqual(response.content, b"2345")
-
-    def test_pairing_respects_https_from_the_trusted_reverse_proxy(self):
-        proxy_app = ProxyHeadersMiddleware(main.app, trusted_hosts=["127.0.0.1"])
-        with TestClient(proxy_app, base_url="http://forge.example", client=("127.0.0.1", 40000)) as client:
-            response = client.get("/api/publish/pairing", headers={"X-Forwarded-Proto": "https"})
-        self.assertEqual(response.json()["api_base"], "https://forge.example")
-
-    def test_creator_pages_private_network_preflight_is_allowed(self):
-        for origin in ("https://creator.douyin.com", "https://cp.kuaishou.com", "https://member.bilibili.com", "https://creator.xiaohongshu.com", "https://baijiahao.baidu.com"):
-            response = self.client.options("/api/publish/extension/tasks/next", headers={
-                "Origin": origin,
-                "Access-Control-Request-Method": "GET",
-                "Access-Control-Request-Headers": "X-StoryForge-Token",
-                "Access-Control-Request-Private-Network": "true",
-            })
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.headers["access-control-allow-origin"], origin)
-            self.assertEqual(response.headers["access-control-allow-private-network"], "true")
 
     def test_create_rejects_missing_title(self):
         response = self.client.post("/api/workflows", json={"book_title": ""})
@@ -621,116 +588,6 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertFalse(output_dir.exists())
         self.assertTrue(unrelated.exists())
         self.assertEqual(self.client.get(f"/api/workflows/{workflow_id}").status_code, 404)
-
-    def test_douyin_publish_task_pairing_and_status_flow(self):
-        with patch.object(main, "process_workflow"):
-            created = self.client.post("/api/workflows", json={"book_title": "准备发布"})
-        workflow_id = created.json()["id"]
-        workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
-        video_url = f"/media/{workflow['output_dir']}/video-1.mp4"
-        cover_url = f"/media/{workflow['output_dir']}/cover-1.png"
-        horizontal_cover_url = f"/media/{workflow['output_dir']}/cover-2.png"
-        square_cover_url = f"/media/{workflow['output_dir']}/cover-3.png"
-        (main.MEDIA / workflow["output_dir"] / "video-1.mp4").write_bytes(b"test-video")
-        (main.MEDIA / workflow["output_dir"] / "cover-1.png").write_bytes(b"test-cover")
-        (main.MEDIA / workflow["output_dir"] / "cover-2.png").write_bytes(b"horizontal-cover")
-        with main.db() as conn:
-            row = conn.execute("SELECT payload FROM workflows WHERE id=?", (workflow_id,)).fetchone()
-            payload = main.json.loads(row["payload"])
-            payload.update(
-                videos=[{"url": video_url}], tags=["文学名著", "人物成长"],
-                topics=["读书", "好书推荐"],
-                covers=[{"url": cover_url, "image_ratio": "3:4"}, {"url": horizontal_cover_url, "image_ratio": "4:3"}, {"url": square_cover_url, "image_ratio": "1:1"}],
-            )
-            conn.execute("UPDATE workflows SET status='completed',payload=? WHERE id=?",
-                         (main.json.dumps(payload, ensure_ascii=False), workflow_id))
-        task_response = self.client.post("/api/publish/tasks", json={
-            "workflow_id": workflow_id, "platform": "douyin", "title": "一本值得读的书",
-            "description": "这是作品简介", "topics": ["读书", "好书推荐", "名著解读", "读书分享", "经典文学", "文学阅读", "#读书"],
-            "video_url": video_url, "cover_urls": [cover_url, horizontal_cover_url],
-        })
-        self.assertEqual(task_response.status_code, 201)
-        task = task_response.json()
-        self.assertEqual(task["status"], "prepared")
-        self.assertEqual(task["tags"], ["文学名著", "人物成长"])
-        self.assertEqual(task["topics"], ["读书", "好书推荐", "名著解读", "读书分享", "经典文学"])
-        self.assertEqual([cover["image_ratio"] for cover in task["covers"]], ["3:4", "4:3"])
-        unsupported = self.client.post("/api/publish/tasks", json={
-            "workflow_id": workflow_id, "title": "不裁剪方图", "video_url": video_url,
-            "cover_urls": [square_cover_url],
-        })
-        self.assertEqual(unsupported.status_code, 422)
-        self.assertIn("原图直传3:4或4:3", unsupported.json()["detail"])
-        pairing = self.client.get("/api/publish/pairing").json()
-        self.assertEqual(self.client.get("/api/publish/extension/tasks/next").status_code, 401)
-        headers = {"X-StoryForge-Token": pairing["token"]}
-        next_task = self.client.get("/api/publish/extension/tasks/next", headers=headers).json()["task"]
-        self.assertEqual(next_task["id"], task["id"])
-        video = self.client.get(f"/api/publish/extension/tasks/{task['id']}/video", headers=headers)
-        self.assertEqual(video.status_code, 200)
-        self.assertEqual(video.content, b"test-video")
-        cover = self.client.get(f"/api/publish/extension/tasks/{task['id']}/cover", headers=headers)
-        self.assertEqual(cover.status_code, 200)
-        self.assertEqual(cover.content, b"test-cover")
-        horizontal_cover = self.client.get(f"/api/publish/extension/tasks/{task['id']}/covers/1", headers=headers)
-        self.assertEqual(horizontal_cover.status_code, 200)
-        self.assertEqual(horizontal_cover.content, b"horizontal-cover")
-        filling = self.client.put(f"/api/publish/extension/tasks/{task['id']}", headers=headers,
-                                  json={"status": "filling"})
-        self.assertEqual(filling.status_code, 200)
-        ready = self.client.put(f"/api/publish/extension/tasks/{task['id']}", headers=headers,
-                                json={"status": "ready"})
-        self.assertEqual(ready.json()["status"], "ready")
-        completed = self.client.put(f"/api/publish/extension/tasks/{task['id']}", headers=headers,
-                                    json={"status": "completed"})
-        self.assertEqual(completed.json()["status"], "completed")
-        for platform in ("kuaishou", "bilibili", "xiaohongshu", "baijiahao"):
-            created_platform_task = self.client.post("/api/publish/tasks", json={
-                "workflow_id": workflow_id, "platform": platform,
-                **({} if platform == "kuaishou" else {"title": "一本值得读的书"}),
-                "description": "这是作品简介", "tags": [f"标签{i}" for i in range(1, 11)],
-                "topics": ["读书", "好书推荐", "名著解读", "读书分享", "经典文学", "文学阅读"], "video_url": video_url,
-                "cover_urls": [cover_url if platform == "kuaishou" else square_cover_url],
-            })
-            self.assertEqual(created_platform_task.status_code, 201)
-            platform_task = created_platform_task.json()
-            self.assertEqual(platform_task["platform"], platform)
-            if platform == "kuaishou":
-                self.assertEqual(platform_task["title"], "")
-                self.assertEqual(platform_task["topics"], ["读书", "好书推荐", "名著解读", "读书分享"])
-            if platform == "bilibili":
-                self.assertEqual(platform_task["tags"], [f"标签{i}" for i in range(1, 11)])
-            self.assertEqual(self.client.get("/api/publish/tasks", params={"platform": platform}).json()[0]["id"], platform_task["id"])
-            self.assertEqual(self.client.get("/api/publish/extension/tasks/next", params={"platform": platform}, headers=headers).json()["task"]["id"], platform_task["id"])
-        extension_zip = self.client.get("/api/publish/extension/download")
-        self.assertEqual(extension_zip.status_code, 200)
-        self.assertEqual(extension_zip.headers["content-type"], "application/zip")
-        with zipfile.ZipFile(io.BytesIO(extension_zip.content)) as bundle:
-            self.assertIn("browser-extension/manifest.json", bundle.namelist())
-            self.assertIn("browser-extension/multi-platform.js", bundle.namelist())
-
-    def test_publish_task_rejects_foreign_or_missing_video(self):
-        with patch.object(main, "process_workflow"):
-            workflow_id = self.client.post("/api/workflows", json={"book_title": "无视频"}).json()["id"]
-        missing = self.client.post("/api/publish/tasks", json={"workflow_id": workflow_id, "title": "测试"})
-        foreign = self.client.post("/api/publish/tasks", json={
-            "workflow_id": workflow_id, "title": "测试", "video_url": "/media/other/video.mp4"
-        })
-        self.assertEqual(missing.status_code, 422)
-        self.assertEqual(foreign.status_code, 422)
-
-    def test_publish_task_list_tolerates_legacy_blank_json_fields(self):
-        with patch.object(main, "process_workflow"):
-            workflow_id = self.client.post("/api/workflows", json={"book_title": "旧发布任务"}).json()["id"]
-        now = 1_700_000_000
-        with main.db() as conn:
-            conn.execute(
-                "INSERT INTO publish_tasks(id,workflow_id,platform,status,title,description,tags,topics,video_url,cover_url,covers,created_at,updated_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                ("legacy-task", workflow_id, "douyin", "prepared", "旧任务", "", "[]", "   ", "/media/legacy.mp4", "", "[]", now, now, ""),
-            )
-        response = self.client.get("/api/publish/tasks")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()[0]["topics"], [])
 
 
 if __name__ == "__main__":

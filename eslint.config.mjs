@@ -33,13 +33,6 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    files: ["browser-extension/**/*.js"],
-    rules: {
-      // Content scripts deliberately tolerate failed best-effort status updates.
-      "no-empty": "off",
-    },
-  },
-  {
     files: ["tests/**/*.mjs"],
     rules: {
       // These legacy source-shape assertions will be replaced by behavior tests.

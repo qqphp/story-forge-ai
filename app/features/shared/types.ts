@@ -22,9 +22,7 @@ export type Draft = { id: string; prompt: string; text: string };
 export type VoiceItem = { short_name: string; locale: string; local_name: string; display_name: string; gender: string };
 export type BackgroundMusic = { id: string; name: string; url: string; category: string; created_at: number };
 export type RequestLog = { id: number; request_type: string; request_url: string; request_params: Record<string, unknown>; created_at: number };
-export type PublishPlatform = "douyin" | "kuaishou" | "bilibili" | "xiaohongshu" | "baijiahao";
-export type PublishTask = { id: string; workflow_id: string; book_title: string; platform: PublishPlatform; status: string; title: string; description: string; tags: string[]; topics: string[]; video_url: string; cover_url: string; covers: Asset[]; created_at: number; updated_at: number; error: string };
-export type WorkspacePage = "workspace" | "publish" | "prompts" | "models" | "voice" | "video" | "logs";
+export type WorkspacePage = "workspace" | "prompts" | "models" | "voice" | "video" | "logs";
 export type AppSettings = { text_api_base: string; text_api_key: string; image_api_base: string; image_api_key: string; model: string; image_model: string; azure_speech_key: string; azure_speech_base: string; voice_format: string; voices: string[]; speech_rate: number; video_orientation: "landscape" | "portrait"; video_generation_method: "local" | "stock"; stock_video_provider: "pexels" | "pixabay"; pexels_api_base: string; pexels_api_key: string; pixabay_api_base: string; pixabay_api_key: string };
 export type Workflow = {
   id: string; book_title: string; author: string; edition: string; status: string;

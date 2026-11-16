@@ -1,28 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import hashlib
 import json
 import os
-import secrets
-import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from backend.modules.contracts import (
     BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
-    PromptTemplateCreate, PromptTemplateUpdate, PublishTaskCreate,
-    PublishTaskStatusUpdate, WorkflowCreate, WorkflowOptions,
+    PromptTemplateCreate, PromptTemplateUpdate, WorkflowCreate, WorkflowOptions,
 )
-from backend.modules.serializers import publish_task_row, workflow_row
+from backend.modules.serializers import workflow_row
 from backend.core.database import connection, initialize_schema
 from backend.modules.media.storage import (
     cleanup_workflow_media as cleanup_media_directory,
@@ -33,7 +29,6 @@ from backend.modules.prompts.service import create_template, delete_template, li
 from backend.modules.media.music import create_music, delete_music, list_music, update_music
 from backend.modules.request_logs.service import clear_logs, list_logs, record_log
 from backend.modules.settings.service import load_settings, save_settings, to_public
-from backend.modules.publishing.service import create_task, delete_task, list_tasks, resolve_task_media, update_task_status
 from backend.integrations.chat import complete_chat
 from backend.integrations.cover import generate_cover as generate_external_cover, make_local_cover
 from backend.integrations.speech import (
@@ -51,7 +46,6 @@ from backend.modules.workflows.repository import get_workflow, list_workflows, s
 from backend.api.system import build_router as build_system_router
 
 ROOT = Path(__file__).resolve().parent.parent
-PUBLISH_PLATFORMS = ("douyin", "kuaishou", "bilibili", "xiaohongshu", "baijiahao")
 load_dotenv(ROOT / ".env", override=False)
 DATA = ROOT / "data"
 MEDIA = DATA / "media"
@@ -104,20 +98,11 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="StoryForge AI", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://creator.douyin.com", "https://cp.kuaishou.com", "https://member.bilibili.com", "https://creator.xiaohongshu.com", "https://baijiahao.baidu.com"],
-    allow_origin_regex=r"chrome-extension://[a-p]{32}",
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.middleware("http")
-async def allow_local_extension_private_network(request, call_next):
-    response = await call_next(request)
-    if request.headers.get("access-control-request-private-network") == "true":
-        response.headers["Access-Control-Allow-Private-Network"] = "true"
-    return response
 
 
 app.mount("/media", StaticFiles(directory=MEDIA), name="media")
@@ -135,19 +120,6 @@ def get_settings() -> dict[str, Any]:
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
     return to_public(settings)
-
-
-def extension_pairing_token() -> str:
-    with db() as conn:
-        row = conn.execute("SELECT value FROM application_meta WHERE key='extension_pairing_token'").fetchone()
-    if not row:
-        raise RuntimeError("浏览器扩展配对码尚未初始化")
-    return row["value"]
-
-
-def require_extension_token(value: str | None) -> None:
-    if not value or not secrets.compare_digest(value, extension_pairing_token()):
-        raise HTTPException(401, "浏览器扩展配对码无效")
 
 
 def log_request(request_type: str, request_url: str, request_params: dict[str, Any]) -> None:
@@ -372,96 +344,6 @@ def prompt_update(prompt_id: str, value: PromptTemplateUpdate):
 @app.delete("/api/prompts/{prompt_id}", status_code=204)
 def prompt_delete(prompt_id: str):
     delete_template(db, prompt_id)
-
-
-@app.get("/api/publish/pairing")
-def publish_pairing(request: Request):
-    return {"token": extension_pairing_token(), "api_base": str(request.base_url).rstrip("/")}
-
-
-@app.post("/api/publish/pairing/rotate")
-def publish_pairing_rotate(request: Request):
-    token = secrets.token_hex(16)
-    with db() as conn:
-        conn.execute("UPDATE application_meta SET value=? WHERE key='extension_pairing_token'", (token,))
-    return {"token": token, "api_base": str(request.base_url).rstrip("/")}
-
-
-@app.get("/api/publish/extension/download")
-def publish_extension_download():
-    extension_root = ROOT / "browser-extension"
-    if not extension_root.is_dir():
-        raise HTTPException(404, "浏览器扩展目录不存在")
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
-        for source in extension_root.rglob("*"):
-            if source.is_file() and "__pycache__" not in source.parts:
-                bundle.write(source, source.relative_to(ROOT))
-    archive.seek(0)
-    return StreamingResponse(archive, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="storyforge-publish-assistant.zip"'})
-
-
-@app.get("/api/publish/tasks")
-def publish_tasks_list(platform: str = ""):
-    return list_tasks(db, platform, PUBLISH_PLATFORMS)
-
-
-@app.post("/api/publish/tasks", status_code=201)
-def publish_task_create(value: PublishTaskCreate):
-    return create_task(db, value)
-
-
-@app.delete("/api/publish/tasks/{task_id}", status_code=204)
-def publish_task_delete(task_id: str):
-    delete_task(db, task_id)
-
-
-@app.get("/api/publish/extension/tasks/next")
-def publish_extension_next(platform: str = "douyin", task_id: str = "",
-                           x_storyforge_token: str | None = Header(default=None)):
-    require_extension_token(x_storyforge_token)
-    if platform not in PUBLISH_PLATFORMS:
-        raise HTTPException(400, "不支持该发布平台")
-    with db() as conn:
-        statuses = "('prepared','filling','failed','ready')" if task_id else "('prepared','filling','ready')"
-        query = ("SELECT publish_tasks.*,workflows.book_title FROM publish_tasks "
-                 "JOIN workflows ON workflows.id=publish_tasks.workflow_id "
-                 f"WHERE platform=? AND publish_tasks.status IN {statuses}")
-        params: list[Any] = [platform]
-        if task_id:
-            query += " AND publish_tasks.id=?"; params.append(task_id)
-        query += " ORDER BY CASE WHEN publish_tasks.status='ready' THEN 1 ELSE 0 END,publish_tasks.created_at LIMIT 1"
-        row = conn.execute(query, params).fetchone()
-    return {"task": publish_task_row(row) if row else None}
-
-
-@app.get("/api/publish/extension/tasks/{task_id}/video")
-def publish_extension_video(task_id: str, x_storyforge_token: str | None = Header(default=None)):
-    require_extension_token(x_storyforge_token)
-    target = resolve_task_media(db, MEDIA, task_id, "video")
-    return FileResponse(target, media_type="video/mp4", filename=target.name)
-
-
-@app.get("/api/publish/extension/tasks/{task_id}/cover")
-def publish_extension_cover(task_id: str, x_storyforge_token: str | None = Header(default=None)):
-    require_extension_token(x_storyforge_token)
-    target = resolve_task_media(db, MEDIA, task_id, "cover")
-    return FileResponse(target, filename=target.name)
-
-
-@app.get("/api/publish/extension/tasks/{task_id}/covers/{cover_index}")
-def publish_extension_cover_by_index(task_id: str, cover_index: int,
-                                     x_storyforge_token: str | None = Header(default=None)):
-    require_extension_token(x_storyforge_token)
-    target = resolve_task_media(db, MEDIA, task_id, "cover", cover_index)
-    return FileResponse(target, filename=target.name)
-
-
-@app.put("/api/publish/extension/tasks/{task_id}")
-def publish_extension_update(task_id: str, value: PublishTaskStatusUpdate,
-                             x_storyforge_token: str | None = Header(default=None)):
-    require_extension_token(x_storyforge_token)
-    return update_task_status(db, task_id, value)
 
 
 @app.get("/api/workflows")

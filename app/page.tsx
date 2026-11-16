@@ -6,7 +6,6 @@ import type { AppSettings, Asset, BackgroundMusic, PromptTemplate, VoiceItem, Wo
 import { Pagination } from "@/app/shared/ui/Pagination";
 import { Status, TaskCard, TaskList } from "@/app/features/workflows/WorkflowList";
 import { RequestLogsPage } from "@/app/features/request-logs/RequestLogsPage";
-import { MultiPublishCenterPage } from "@/app/features/publishing/MultiPublishCenterPage";
 import { coverSizeGroups } from "@/app/features/prompts/cover-size-groups";
 import { FormatSelect, ModelSelect, SpeechRateControl, VoiceControl } from "@/app/features/settings/SelectionControls";
 import { defaultSettings, speechFormats } from "@/app/features/settings/defaults";
@@ -96,7 +95,6 @@ export default function Home() {
         <button className="brand" onClick={()=>{setActivePage("workspace");setSelected(null)}} aria-label="返回工作台"><span className="brand-mark">砚</span><span><b>砚界</b><small>STORYFORGE AI</small></span></button>
         <nav aria-label="主导航">
           <button className={activePage==="workspace"?"active":""} onClick={()=>setActivePage("workspace")}><span>册</span>创作工作台</button>
-          <button className={activePage==="publish"?"active":""} onClick={()=>setActivePage("publish")}><span>发</span>发布中心</button>
           <button className={activePage==="prompts"?"active":""} onClick={()=>setActivePage("prompts")}><span>✦</span>提示词库</button>
           <button className={activePage==="models"?"active":""} onClick={()=>setActivePage("models")}><span>AI</span>模型配置</button>
           <button className={activePage==="voice"?"active":""} onClick={()=>setActivePage("voice")}><span>声</span>语音设置</button>
@@ -107,7 +105,7 @@ export default function Home() {
       </aside>
       <section className="workspace-main">
       <header className="topbar">
-        <div className="page-heading"><b>{{workspace:"创作工作台",publish:"发布中心",prompts:"提示词库",models:"模型配置",voice:"语音设置",video:"视频设置",logs:"请求日志"}[activePage]}</b><small>创作与生成配置中心</small></div>
+        <div className="page-heading"><b>{{workspace:"创作工作台",prompts:"提示词库",models:"模型配置",voice:"语音设置",video:"视频设置",logs:"请求日志"}[activePage]}</b><small>创作与生成配置中心</small></div>
         <div className="top-actions">
           <span className={`connection ${connected ? "online" : ""}`}><i />{connected ? "服务已连接" : "演示模式"}</span>
         </div>
@@ -135,7 +133,6 @@ export default function Home() {
 
         {shown.length ? workView==="cards"?<div className="task-grid">{shown.map(task => <TaskCard key={task.id} task={task} stages={stages} onOpen={() => setSelected(task)} />)}</div>:<TaskList tasks={shown} checkedIds={checkedTaskIds} allChecked={allShownChecked} onToggleAll={()=>setCheckedTaskIds(allShownChecked?checkedTaskIds.filter(id=>!shown.some(task=>task.id===id)):[...new Set([...checkedTaskIds,...shown.map(task=>task.id)])])} onToggle={id=>setCheckedTaskIds(ids=>ids.includes(id)?ids.filter(value=>value!==id):[...ids,id])} onOpen={setSelected} onDelete={deleteCheckedTasks}/>:<div className="empty"><span>册</span><h3>还没有作品</h3><p>从一本打动你的书开始。</p><button className="primary" onClick={() => setShowCreate(true)}>开始新制作</button></div>}
       </section>}
-      {activePage==="publish"&&<MultiPublishCenterPage connected={connected} workflows={tasks} onToast={setToast}/>}
       {activePage==="prompts"&&<section className="config-page"><PromptLibraryDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>setToast("提示词库已更新")}/></section>}
       {activePage==="models"&&<section className="config-page"><SettingsDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>{setToast("配置已保存");loadTasks()}}/></section>}
       {activePage==="voice"&&<section className="config-page"><VoiceSettingsDialog connected={connected} onClose={()=>setActivePage("workspace")} onSaved={()=>setToast("语音配置已保存")}/></section>}

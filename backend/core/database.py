@@ -1,7 +1,6 @@
 """SQLite connection and schema evolution for StoryForge local state."""
 
 import json
-import secrets
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -50,46 +49,11 @@ def initialize_schema(db: Callable[[], ContextManager[sqlite3.Connection]]) -> N
             );
             CREATE INDEX IF NOT EXISTS idx_request_logs_type_created_at ON request_logs(request_type, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
-            CREATE TABLE IF NOT EXISTS application_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS publish_tasks (
-              id TEXT PRIMARY KEY,
-              workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-              platform TEXT NOT NULL CHECK(platform IN ('douyin','kuaishou','bilibili','xiaohongshu','baijiahao')),
-              status TEXT NOT NULL CHECK(status IN ('prepared','filling','ready','completed','failed','cancelled')),
-              title TEXT NOT NULL, description TEXT NOT NULL, tags TEXT NOT NULL,
-              topics TEXT NOT NULL DEFAULT '[]', video_url TEXT NOT NULL,
-              cover_url TEXT NOT NULL DEFAULT '', covers TEXT NOT NULL DEFAULT '[]',
-              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_publish_tasks_platform_status_created
-              ON publish_tasks(platform, status, created_at);
             """
         )
-        if not conn.execute("SELECT 1 FROM application_meta WHERE key='extension_pairing_token'").fetchone():
-            conn.execute("INSERT INTO application_meta(key,value) VALUES('extension_pairing_token',?)", (secrets.token_hex(16),))
         columns = {column["name"] for column in conn.execute("PRAGMA table_info(prompt_templates)")}
         if "image_sizes" not in columns:
             conn.execute("ALTER TABLE prompt_templates ADD COLUMN image_sizes TEXT NOT NULL DEFAULT '[\"2:3\"]'")
-        publish_columns = {column["name"] for column in conn.execute("PRAGMA table_info(publish_tasks)")}
-        if "topics" not in publish_columns:
-            conn.execute("ALTER TABLE publish_tasks ADD COLUMN topics TEXT NOT NULL DEFAULT '[]'")
-        if "covers" not in publish_columns:
-            conn.execute("ALTER TABLE publish_tasks ADD COLUMN covers TEXT NOT NULL DEFAULT '[]'")
-        publish_schema = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='publish_tasks'").fetchone()["sql"]
-        if "kuaishou" not in publish_schema:
-            conn.execute("DROP INDEX IF EXISTS idx_publish_tasks_platform_status_created")
-            conn.execute("ALTER TABLE publish_tasks RENAME TO publish_tasks_legacy")
-            conn.execute("""CREATE TABLE publish_tasks (
-              id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-              platform TEXT NOT NULL CHECK(platform IN ('douyin','kuaishou','bilibili','xiaohongshu','baijiahao')),
-              status TEXT NOT NULL CHECK(status IN ('prepared','filling','ready','completed','failed','cancelled')),
-              title TEXT NOT NULL, description TEXT NOT NULL, tags TEXT NOT NULL, topics TEXT NOT NULL DEFAULT '[]',
-              video_url TEXT NOT NULL, cover_url TEXT NOT NULL DEFAULT '', covers TEXT NOT NULL DEFAULT '[]',
-              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT ''
-            )""")
-            conn.execute("INSERT INTO publish_tasks SELECT * FROM publish_tasks_legacy")
-            conn.execute("DROP TABLE publish_tasks_legacy")
-            conn.execute("CREATE INDEX idx_publish_tasks_platform_status_created ON publish_tasks(platform, status, created_at)")
         if conn.execute("SELECT COUNT(*) AS count FROM prompt_templates").fetchone()["count"] == 0:
             now = int(time.time())
             conn.executemany("INSERT INTO prompt_templates VALUES(?,?,?,?,?,?,?)", [
