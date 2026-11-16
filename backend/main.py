@@ -40,6 +40,7 @@ from backend.integrations.speech import (
 )
 from backend.integrations.video import video_command as build_video_command
 from backend.integrations.stock_video import download_stock_videos
+from backend.integrations.subtitles import generate_subtitles, subtitle_language
 from backend.modules.workflows.application import create_workflow, delete_workflow, queue_retry
 from backend.modules.workflows.executor import execute_workflow
 from backend.modules.workflows.repository import get_workflow, list_workflows, save_workflow as persist_workflow
@@ -197,7 +198,8 @@ async def process_workflow(wid: str) -> None:
                            is_deleting=DELETING_WORKFLOWS.__contains__, cleanup_deleted=cleanup_deleted,
                            llm=llm, speech=speech, audio_extension=audio_extension,
                            generate_cover=generate_cover, video_command=build_video_command,
-                           download_stock_videos=download_stock_videos, log_request=log_request)
+                           download_stock_videos=download_stock_videos, log_request=log_request,
+                           generate_subtitles=generate_subtitles, subtitle_language=subtitle_language)
 
 
 async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, str]], bool]:

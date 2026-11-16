@@ -368,6 +368,10 @@ class StoryForgeApiTests(unittest.TestCase):
             target.write_bytes(b"audio")
             return False
 
+        def fake_subtitles(audio_path, text, _language):
+            from backend.integrations.subtitles import write_subtitle_files
+            return write_subtitle_files(audio_path, [{"start": 0, "end": 1.25, "text": text}])
+
         async def fake_cover(path, *_args):
             Image.new("RGB", (120, 160), "navy").save(path, "PNG")
             return True, "120×160"
@@ -377,12 +381,17 @@ class StoryForgeApiTests(unittest.TestCase):
 
         with patch.object(main, "llm", side_effect=fake_llm), \
              patch.object(main, "speech", side_effect=fake_speech), \
+             patch.object(main, "generate_subtitles", side_effect=fake_subtitles), \
              patch.object(main, "generate_cover", side_effect=fake_cover), \
              patch.object(executor.subprocess, "run", return_value=FailedVideo()):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
-        self.assertEqual(workflow["step"], 7)
+        self.assertEqual(workflow["step"], 8)
         self.assertEqual(workflow["status"], "completed")
+        self.assertEqual(len(workflow["subtitles"]), len(workflow["audio"]))
+        self.assertTrue(workflow["subtitles"][0]["srt_url"].endswith(".srt"))
+        self.assertTrue(workflow["subtitles"][0]["txt_url"].endswith(".txt"))
+        self.assertTrue(workflow["subtitles"][0]["json_url"].endswith(".json"))
         self.assertEqual(len(workflow["tags"]), 8)
         self.assertEqual(len(workflow["topics"]), 8)
         self.assertEqual(workflow["topics"][0], "西游记")
@@ -402,6 +411,10 @@ class StoryForgeApiTests(unittest.TestCase):
             target.write_bytes(b"audio")
             return False
 
+        def fake_subtitles(audio_path, text, _language):
+            from backend.integrations.subtitles import write_subtitle_files
+            return write_subtitle_files(audio_path, [{"start": 0, "end": 1, "text": text or "字幕"}])
+
         async def fake_cover(path, *_args):
             Image.new("RGB", (120, 160), "navy").save(path, "PNG")
             return False, "120×160"
@@ -411,6 +424,7 @@ class StoryForgeApiTests(unittest.TestCase):
 
         with patch.object(main, "llm", side_effect=fake_llm), \
              patch.object(main, "speech", side_effect=fake_speech), \
+             patch.object(main, "generate_subtitles", side_effect=fake_subtitles), \
              patch.object(main, "generate_cover", side_effect=fake_cover), \
              patch.object(executor.subprocess, "run", return_value=FailedVideo()):
             asyncio.run(main.process_workflow(workflow_id))

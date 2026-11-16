@@ -17,6 +17,7 @@ export type Asset = {
   duration?: number;
   draft_id?: string;
 };
+export type SubtitleTrack = { draft_id: string; voice: string; srt_url: string; txt_url: string; json_url: string };
 
 export type Draft = { id: string; prompt: string; text: string };
 export type VoiceItem = { short_name: string; locale: string; local_name: string; display_name: string; gender: string };
@@ -27,5 +28,5 @@ export type AppSettings = { text_api_base: string; text_api_key: string; image_a
 export type Workflow = {
   id: string; book_title: string; author: string; edition: string; status: string;
   step: number; progress: number; created_at: number; description?: string; error?: string;
-  output_dir?: string; tags?: string[]; topics?: string[]; original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; videos?: Asset[]; cover_prompts?: PromptTemplate[];
+  output_dir?: string; tags?: string[]; topics?: string[]; original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; subtitles?: SubtitleTrack[]; videos?: Asset[]; cover_prompts?: PromptTemplate[];
 };

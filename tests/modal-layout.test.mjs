@@ -110,14 +110,18 @@ test("cover ratios are selected as prompts and generated images expose their met
   assert.match(css, /\.cover-gallery/);
 });
 
-test("workflow details expose generated tags and topics as a seven-step pipeline", () => {
-  assert.match(page, /"生成标签和话题"/);
+test("workflow details expose generated tags, topics and subtitles as an eight-step pipeline", () => {
+  assert.match(page, /"生成配音", "生成字幕", "生成标签和话题"/);
   assert.match(page, /task\.tags\?\.length/);
   assert.match(page, /task\.topics\?\.length/);
   assert.match(page, /<h3>标签和话题<\/h3>/);
   assert.match(page, /标签话题生成/);
-  assert.match(css, /grid-template-columns:repeat\(7,1fr\)/);
+  assert.match(page, /下载 SRT/);
+  assert.match(page, /下载 TXT/);
+  assert.match(page, /下载 JSON/);
+  assert.match(css, /grid-template-columns:repeat\(8,1fr\)/);
   assert.match(css, /\.taxonomy-panel/);
+  assert.match(css, /\.subtitle-downloads/);
 });
 
 test("configuration and request logs use standalone sidebar pages", () => {

@@ -31,6 +31,8 @@ async def execute_workflow(
     video_command: Callable[..., list[str]],
     download_stock_videos: Callable[..., Any],
     log_request: Callable[[str, str, dict[str, Any]], None],
+    generate_subtitles: Callable[[Path, str, str], dict[str, Path]],
+    subtitle_language: Callable[[str], str],
 ) -> None:
     """Run one workflow while reporting durable progress through ``save``."""
     try:
@@ -82,7 +84,22 @@ async def execute_workflow(
                 if is_deleting(wid): return
                 actual = target if target.exists() else base.with_suffix(".wav")
                 audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{item['output_dir']}/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
-        save(wid, step=5, progress=64, payload_update={"audio": audio_items})
+        save(wid, step=5, progress=58, payload_update={"audio": audio_items})
+
+        draft_text = {draft["id"]: draft["text"] for draft in polished}
+        subtitle_items = []
+        for audio in audio_items:
+            if is_deleting(wid): return
+            narration = output_dir / Path(audio["url"]).name
+            await asyncio.to_thread(generate_subtitles, narration, draft_text.get(audio["draft_id"], ""), subtitle_language(audio["voice"]))
+            if is_deleting(wid): return
+            subtitle_items.append({
+                "draft_id": audio["draft_id"], "voice": audio["voice"],
+                "srt_url": f"/media/{item['output_dir']}/{narration.with_suffix('.srt').name}",
+                "txt_url": f"/media/{item['output_dir']}/{narration.with_suffix('.txt').name}",
+                "json_url": f"/media/{item['output_dir']}/{narration.with_suffix('.json').name}",
+            })
+        save(wid, step=6, progress=68, payload_update={"subtitles": subtitle_items})
 
         share_text = "\n\n---\n\n".join(draft["text"] for draft in polished)
         taxonomy_raw = await llm([
@@ -91,7 +108,7 @@ async def execute_workflow(
         ], settings, "标签话题生成")
         if is_deleting(wid): return
         tags, topics = generated_taxonomy(taxonomy_raw, title)
-        save(wid, step=6, progress=74, payload_update={"tags": tags, "topics": topics})
+        save(wid, step=7, progress=76, payload_update={"tags": tags, "topics": topics})
 
         cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")] or [{"text": "克制、文学感、适合短视频竖版", "enabled": True, "image_sizes": DEFAULT_IMAGE_SIZES}]
         covers, cover_index = [], 0
@@ -103,7 +120,7 @@ async def execute_workflow(
                 used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
                 if is_deleting(wid): return
                 covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
-        save(wid, step=7, progress=88, payload_update={"covers": covers})
+        save(wid, step=8, progress=88, payload_update={"covers": covers})
 
         videos, ffmpeg = [], os.getenv("FFMPEG_PATH", "ffmpeg")
         orientation = settings.get("video_orientation", "portrait")
@@ -138,7 +155,7 @@ async def execute_workflow(
             if result.returncode == 0:
                 resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
                 videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}", "background_music": background_music.get("name") if background_music else "", "orientation": orientation, "source": settings.get("stock_video_provider") if stock_manifest else "local", "resolution": resolution or ("1920 × 1080" if orientation == "landscape" else "1080 × 1920"), "duration": duration})
-        save(wid, status="completed", step=7, progress=100, payload_update={"videos": videos})
+        save(wid, status="completed", step=8, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save(wid, status="failed", payload_update={"error": str(exc)[:500]})
     finally:
