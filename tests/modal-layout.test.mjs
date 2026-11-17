@@ -66,7 +66,11 @@ test("voice center provides global search preview pagination and offline downloa
   assert.match(page, /api\/voices\/download-all/);
   assert.match(page, /搜索音色、语言、地区或性别/);
   assert.match(page, /试听会根据音色所属国家或地区，自动翻译并生成对应语言/);
-  assert.match(page, /<Pagination page=\{voicePage\}/);
+  assert.match(page, /<Pagination page=\{currentPage\}/);
+  assert.match(page, /className="voice-filters"/);
+  assert.match(page, /重置筛选/);
+  assert.match(page, /筛选项随本次返回的音色信息变化/);
+  assert.match(page, /const voicePageSize = 8/);
 });
 
 test("background music supports HTTPS entry search and pagination", () => {
@@ -80,7 +84,7 @@ test("background music supports HTTPS entry search and pagination", () => {
   assert.match(page, /className="music-player"/);
   assert.match(page, /<audio key=\{playingMusic\?\.id/);
   assert.match(css, /\.music-list\{min-height:0\}/);
-  assert.match(page, /const voicePageSize=8; const musicPageSize=6;/);
+  assert.match(page, /const musicPageSize=6/);
 });
 
 test("workflow creation supports background music mixing controls", () => {

@@ -600,7 +600,18 @@ class StoryForgeApiTests(unittest.TestCase):
         calls = []
         class Response:
             def raise_for_status(self): pass
-            def json(self): return [{"ShortName": "zh-CN-XiaoxiaoNeural"}, {"ShortName": "en-US-JennyNeural"}, {"ShortName": "ja-JP-NanamiNeural"}]
+            def json(self): return [
+                {
+                    "ShortName": "zh-CN-XiaoxiaoNeural", "Locale": "zh-CN", "LocaleName": "Chinese (Mandarin, Simplified)",
+                    "LocalName": "晓晓", "DisplayName": "Xiaoxiao", "Gender": "Female", "VoiceType": "Neural", "Status": "GA",
+                    "SampleRateHertz": "48000", "StyleList": ["chat", "newscast"], "RolePlayList": ["YoungAdultFemale"],
+                    "SecondaryLocaleList": ["en-US"], "VoiceTag": {"TailoredScenarios": ["Chat"], "VoicePersonalities": ["Warm"]},
+                },
+                {"ShortName": "en-US-JennyNeural"},
+                {"ShortName": "ja-JP-NanamiNeural"},
+                {"DisplayName": "missing short name"},
+                "not-a-voice",
+            ]
         class Client:
             async def __aenter__(self): return self
             async def __aexit__(self, *_): pass
@@ -610,6 +621,24 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(calls, ["https://eastus.tts.speech.microsoft.com/cognitiveservices/voices/list"])
         self.assertEqual(result["voices"], ["zh-CN-XiaoxiaoNeural", "en-US-JennyNeural", "ja-JP-NanamiNeural"])
         self.assertEqual([item["short_name"] for item in result["items"]], result["voices"])
+        xiaoxiao = result["items"][0]
+        self.assertEqual(xiaoxiao["locale"], "zh-CN")
+        self.assertEqual(xiaoxiao["locale_name"], "Chinese (Mandarin, Simplified)")
+        self.assertEqual(xiaoxiao["local_name"], "晓晓")
+        self.assertEqual(xiaoxiao["gender"], "Female")
+        self.assertEqual(xiaoxiao["voice_type"], "Neural")
+        self.assertEqual(xiaoxiao["status"], "GA")
+        self.assertEqual(xiaoxiao["sample_rate_hertz"], "48000")
+        self.assertEqual(xiaoxiao["styles"], ["chat", "newscast"])
+        self.assertEqual(xiaoxiao["roles"], ["YoungAdultFemale"])
+        self.assertEqual(xiaoxiao["secondary_locales"], ["en-US"])
+        self.assertEqual(xiaoxiao["scenarios"], ["Chat"])
+        self.assertEqual(xiaoxiao["personalities"], ["Warm"])
+        jenny = result["items"][1]
+        self.assertEqual(jenny["gender"], "")
+        self.assertEqual(jenny["styles"], [])
+        self.assertEqual(jenny["scenarios"], [])
+        self.assertEqual(jenny["personalities"], [])
 
     def test_background_music_crud_search_and_https_validation(self):
         invalid = self.client.post("/api/background-music", json={"name": "不安全地址", "url": "http://example.com/a.mp3", "category": "测试"})

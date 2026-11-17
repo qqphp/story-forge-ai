@@ -218,17 +218,75 @@ async def process_video_regeneration(wid: str) -> None:
     )
 
 
-async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, str]], bool]:
+def _voice_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return ""
+
+
+def _voice_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def voice_item(**fields: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "short_name": "", "locale": "", "locale_name": "", "local_name": "", "display_name": "",
+        "gender": "", "voice_type": "", "status": "", "sample_rate_hertz": "",
+        "styles": [], "roles": [], "secondary_locales": [], "scenarios": [], "personalities": [],
+    }
+    item.update(fields)
+    return item
+
+
+def normalize_voice_item(voice: Any) -> dict[str, Any] | None:
+    if not isinstance(voice, dict):
+        return None
+    short_name = _voice_text(voice.get("ShortName"))
+    if not short_name:
+        return None
+    tag = voice.get("VoiceTag") if isinstance(voice.get("VoiceTag"), dict) else {}
+    return voice_item(
+        short_name=short_name,
+        locale=_voice_text(voice.get("Locale")),
+        locale_name=_voice_text(voice.get("LocaleName")),
+        local_name=_voice_text(voice.get("LocalName")),
+        display_name=_voice_text(voice.get("DisplayName")),
+        gender=_voice_text(voice.get("Gender")),
+        voice_type=_voice_text(voice.get("VoiceType")),
+        status=_voice_text(voice.get("Status")),
+        sample_rate_hertz=_voice_text(voice.get("SampleRateHertz")),
+        styles=_voice_list(voice.get("StyleList")),
+        roles=_voice_list(voice.get("RolePlayList")),
+        secondary_locales=_voice_list(voice.get("SecondaryLocaleList")),
+        scenarios=_voice_list(tag.get("TailoredScenarios")),
+        personalities=_voice_list(tag.get("VoicePersonalities")),
+    )
+
+
+async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
     key = settings.get("azure_speech_key")
     if not key:
-        names = ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural"]
-        return ([{"short_name": name, "locale": "zh-CN", "local_name": name, "display_name": name, "gender": ""} for name in names], True)
+        demo_voices = [
+            ("zh-CN-XiaoxiaoNeural", "Female"),
+            ("zh-CN-YunxiNeural", "Male"),
+            ("zh-CN-XiaoyiNeural", "Female"),
+        ]
+        return ([voice_item(short_name=name, locale="zh-CN", locale_name="Chinese (Mandarin, Simplified)",
+                            local_name=name, display_name=name, gender=gender, voice_type="Neural")
+                 for name, gender in demo_voices], True)
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(speech_api_url(settings["azure_speech_base"], "/cognitiveservices/voices/list"),
                                     headers={"Ocp-Apim-Subscription-Key": key})
         response.raise_for_status()
-    items = [{"short_name": v["ShortName"], "locale": v.get("Locale", ""), "local_name": v.get("LocalName", ""),
-              "display_name": v.get("DisplayName", ""), "gender": v.get("Gender", "")} for v in response.json() if v.get("ShortName")]
+    items = []
+    for voice in response.json():
+        item = normalize_voice_item(voice)
+        if item:
+            items.append(item)
     return items, False
 
 

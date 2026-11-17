@@ -20,7 +20,22 @@ export type Asset = {
 export type SubtitleTrack = { draft_id: string; voice: string; srt_url: string; txt_url: string; json_url: string };
 
 export type Draft = { id: string; prompt: string; text: string };
-export type VoiceItem = { short_name: string; locale: string; local_name: string; display_name: string; gender: string };
+export type VoiceItem = {
+  short_name: string;
+  locale: string;
+  locale_name: string;
+  local_name: string;
+  display_name: string;
+  gender: string;
+  voice_type: string;
+  status: string;
+  sample_rate_hertz: string;
+  styles: string[];
+  roles: string[];
+  secondary_locales: string[];
+  scenarios: string[];
+  personalities: string[];
+};
 export type BackgroundMusic = { id: string; name: string; url: string; category: string; created_at: number };
 export type RequestLog = { id: number; request_type: string; request_url: string; request_params: Record<string, unknown>; created_at: number };
 export type WorkspacePage = "workspace" | "prompts" | "models" | "voice" | "video" | "logs";

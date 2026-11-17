@@ -1,0 +1,129 @@
+.voice-filter-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fffdf8;
+}
+
+.voice-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.voice-filter-head b {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.voice-filter-head small {
+  display: block;
+  margin-top: 3px;
+  color: #8d9692;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.voice-filter-reset {
+  border: 1px solid #d7d2c8;
+  background: #fff;
+  color: #66716d;
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.voice-filter-reset:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.voice-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.voice-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: #68736f;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.voice-filters select {
+  width: 100%;
+  height: 36px;
+  padding: 6px 8px;
+  border: 1px solid #d8d4ca;
+  border-radius: 7px;
+  background: #fff;
+  color: #46544f;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.voice-filters select.active {
+  border-color: #c88d3f;
+  background: #fffaf0;
+}
+
+.voice-filters select:focus {
+  outline: 2px solid rgba(200, 141, 63, 0.45);
+  outline-offset: 1px;
+}
+
+.voice-filter-summary {
+  margin: 10px 0 0;
+  color: #75807b;
+  font-size: 10px;
+}
+
+.voice-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.voice-tags em {
+  max-width: 100%;
+  padding: 2px 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #f3efe4;
+  color: #7d6a45;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-tags em.more {
+  background: transparent;
+  color: #8d9692;
+}
+
+@media (max-width: 900px) {
+  .voice-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .voice-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .voice-filter-head {
+    align-items: flex-start;
+  }
+}
