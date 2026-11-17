@@ -36,6 +36,18 @@ class WorkflowCreate(WorkflowOptions, BookCreate):
     pass
 
 
+class AudioRegenerateRequest(BaseModel):
+    voice: str = Field(min_length=1, max_length=120)
+
+    @field_validator("voice")
+    @classmethod
+    def validate_voice(cls, value: str) -> str:
+        voice = value.strip()
+        if not voice or any(char in voice for char in "/\\"):
+            raise ValueError("音色无效")
+        return voice
+
+
 class BatchWorkflowCreate(WorkflowOptions):
     books: list[BookCreate] = Field(min_length=1, max_length=50)
 

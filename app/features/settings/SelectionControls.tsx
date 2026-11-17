@@ -1,14 +1,14 @@
 
 import { useId, useState } from "react";
 
-export function SearchableVoiceSelect({voices,value,onChange}:{voices:string[];value:string;onChange:(voice:string)=>void}) {
+export function SearchableVoiceSelect({voices,value,onChange,disabled=false}:{voices:string[];value:string;onChange:(voice:string)=>void;disabled?:boolean}) {
   const [query,setQuery]=useState(""); const [open,setOpen]=useState(false);
   const filtered=voices.filter(voice=>voice.toLowerCase().includes(query.trim().toLowerCase())).slice(0,40);
-  return <div className="voice-select"><button type="button" className="voice-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={()=>setOpen(!open)}><span><small>当前音色</small><b>{value||"请选择默认音色"}</b></span><i>{open?"▴":"▾"}</i></button>{open&&<div className="voice-dropdown"><label className="voice-search"><span>⌕</span><input role="combobox" aria-expanded="true" aria-controls="voice-options" value={query} onChange={e=>setQuery(e.target.value)} placeholder="输入名称模糊搜索，如 Xiaoxiao"/></label><div id="voice-options" role="listbox" className="voice-options">{filtered.map(voice=><button type="button" role="option" aria-selected={voice===value} className={voice===value?"selected":""} key={voice} onClick={()=>{onChange(voice);setOpen(false);setQuery("")}}><span>{voice===value?"✓":"声"}</span><b>{voice}</b></button>)}{!filtered.length&&<p>没有匹配的音色</p>}</div><small className="voice-result">显示 {filtered.length} / {voices.length} 个音色</small></div>}</div>;
+  return <div className="voice-select"><button type="button" className="voice-trigger" aria-haspopup="listbox" aria-expanded={open&&!disabled} disabled={disabled} onClick={()=>setOpen(!open)}><span><small>当前音色</small><b>{value||"请选择默认音色"}</b></span><i>{open&&!disabled?"▴":"▾"}</i></button>{open&&!disabled&&<div className="voice-dropdown"><label className="voice-search"><span>⌕</span><input role="combobox" aria-expanded="true" aria-controls="voice-options" value={query} onChange={e=>setQuery(e.target.value)} placeholder="输入名称模糊搜索，如 Xiaoxiao"/></label><div id="voice-options" role="listbox" className="voice-options">{filtered.map(voice=><button type="button" role="option" aria-selected={voice===value} className={voice===value?"selected":""} key={voice} onClick={()=>{onChange(voice);setOpen(false);setQuery("")}}><span>{voice===value?"✓":"声"}</span><b>{voice}</b></button>)}{!filtered.length&&<p>没有匹配的音色</p>}</div><small className="voice-result">显示 {filtered.length} / {voices.length} 个音色</small></div>}</div>;
 }
 
-export function VoiceControl({label,voices,value,onChange}:{label:string;voices:string[];value:string;onChange:(voice:string)=>void}) {
-  return <div className="voice-control"><span>{label}</span><SearchableVoiceSelect voices={voices} value={value} onChange={onChange}/></div>;
+export function VoiceControl({label,voices,value,onChange,disabled=false}:{label:string;voices:string[];value:string;onChange:(voice:string)=>void;disabled?:boolean}) {
+  return <div className="voice-control"><span>{label}</span><SearchableVoiceSelect voices={voices} value={value} onChange={onChange} disabled={disabled}/></div>;
 }
 
 export function ModelSelect({models,value,onChange,label="模型",disabled=false}:{models:string[];value:string;onChange:(model:string)=>void;label?:string;disabled?:boolean}) {

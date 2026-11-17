@@ -44,5 +44,6 @@ export type Workflow = {
   id: string; book_title: string; author: string; edition: string; status: string;
   step: number; progress: number; created_at: number; updated_at?: number; description?: string; error?: string;
   video_regenerating?: boolean; video_error?: string;
+  audio_regenerating?: boolean; audio_error?: string;
   output_dir?: string; tags?: string[]; topics?: string[]; original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; subtitles?: SubtitleTrack[]; videos?: Asset[]; cover_prompts?: PromptTemplate[];
 };

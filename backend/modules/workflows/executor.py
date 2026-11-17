@@ -127,6 +127,7 @@ async def execute_workflow(
             wid, item, settings, output_dir, covers, audio_items, description=description,
             is_deleting=is_deleting, llm=llm, video_command=video_command,
             download_stock_videos=download_stock_videos, log_request=log_request,
+            subtitle_items=subtitle_items,
         )
         if videos is None:
             return
@@ -165,6 +166,61 @@ def discard_regeneration_files(output_dir: Path, stamp: int) -> None:
         path.with_suffix(".ass").unlink(missing_ok=True)
 
 
+_NARRATION_SUFFIXES = {".mp3", ".wav", ".ogg", ".opus", ".webm", ".pcm"}
+_SUBTITLE_SUFFIXES = {".srt", ".txt", ".json"}
+
+
+def discard_audio_regeneration_files(output_dir: Path, stamp: int) -> None:
+    if not output_dir.is_dir():
+        return
+    for path in output_dir.glob(f"draft-*-voice-1-{stamp}.*"):
+        path.unlink(missing_ok=True)
+
+
+def remove_replaced_narration(
+    output_dir: Path,
+    previous_audio: list[dict[str, Any]],
+    previous_subtitles: list[dict[str, Any]],
+    current_audio: list[dict[str, Any]],
+    current_subtitles: list[dict[str, Any]],
+) -> None:
+    """Delete narration and subtitle files replaced by a successful audio regeneration."""
+    keep = {_media_name(str(item.get("url", ""))) for item in current_audio}
+    for item in current_subtitles:
+        for key in ("srt_url", "txt_url", "json_url"):
+            keep.add(_media_name(str(item.get(key, ""))))
+    keep.discard("")
+    urls = [str(item.get("url", "")) for item in previous_audio]
+    for item in previous_subtitles:
+        urls.extend(str(item.get(key, "")) for key in ("srt_url", "txt_url", "json_url"))
+    resolved_root = output_dir.resolve()
+    for url in urls:
+        name = _media_name(url)
+        if not name or name in keep or not name.startswith("draft-"):
+            continue
+        path = (output_dir / name).resolve()
+        if path.parent != resolved_root or path.suffix.lower() not in _NARRATION_SUFFIXES | _SUBTITLE_SUFFIXES:
+            continue
+        path.unlink(missing_ok=True)
+        if path.suffix.lower() in _NARRATION_SUFFIXES:
+            for suffix in _SUBTITLE_SUFFIXES:
+                sidecar = path.with_suffix(suffix)
+                if sidecar.name not in keep and sidecar.resolve().parent == resolved_root:
+                    sidecar.unlink(missing_ok=True)
+
+
+def subtitle_file_for_audio(output_dir: Path, audio: dict[str, Any], subtitle_items: list[dict[str, Any]]) -> Path:
+    """Resolve the newest subtitle file saved for this narration."""
+    draft_id = audio.get("draft_id")
+    voice = audio.get("voice")
+    candidates = [item for item in subtitle_items if item.get("draft_id") == draft_id and item.get("srt_url")]
+    exact = next((item for item in reversed(candidates) if item.get("voice") == voice), None)
+    chosen = exact or (candidates[-1] if candidates else None)
+    if chosen:
+        return output_dir / _media_name(str(chosen["srt_url"]))
+    return (output_dir / _media_name(str(audio.get("url", "")))).with_suffix(".srt")
+
+
 async def compose_videos(
     wid: str,
     item: dict[str, Any],
@@ -180,8 +236,10 @@ async def compose_videos(
     download_stock_videos: Callable[..., Any],
     log_request: Callable[[str, str, dict[str, Any]], None],
     output_name: Callable[[int], str] | None = None,
+    subtitle_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Compose one video per narration from existing covers, audio, and optional subtitles."""
+    subtitle_items = subtitle_items or []
     videos, ffmpeg = [], os.getenv("FFMPEG_PATH", "ffmpeg")
     orientation = settings.get("video_orientation", "portrait")
     required_ratio = "16:9" if orientation == "landscape" else "9:16"
@@ -215,9 +273,9 @@ async def compose_videos(
         if Path(name).name != name:
             raise RuntimeError("视频文件名无效")
         cover = output_dir / Path(matching_covers[index % len(matching_covers)]["url"]).name
-        narration = output_dir / Path(audio["url"]).name
+        narration = output_dir / _media_name(str(audio["url"]))
         out = output_dir / name
-        subtitles = narration.with_suffix(".srt") if settings.get("burn_subtitles") else None
+        subtitles = subtitle_file_for_audio(output_dir, audio, subtitle_items) if settings.get("burn_subtitles") else None
         if subtitles is not None and not subtitles.is_file():
             raise RuntimeError("找不到与配音对应的 SRT 字幕，无法烧录")
         result = await asyncio.to_thread(
@@ -255,7 +313,7 @@ async def regenerate_workflow_videos(
     download_stock_videos: Callable[..., Any],
     log_request: Callable[[str, str, dict[str, Any]], None],
 ) -> None:
-    """Render videos again from the saved narration, covers, and subtitles."""
+    """Render videos again from the latest saved narration, covers, and subtitles."""
     stamp = time.time_ns()
     output_dir: Path | None = None
     succeeded = False
@@ -276,6 +334,7 @@ async def regenerate_workflow_videos(
             is_deleting=is_deleting, llm=llm, video_command=video_command,
             download_stock_videos=download_stock_videos, log_request=log_request,
             output_name=lambda index: f"video-{index + 1}-{stamp}.mp4",
+            subtitle_items=item.get("subtitles") or [],
         )
         if videos is None or is_deleting(wid):
             return
@@ -299,3 +358,97 @@ async def regenerate_workflow_videos(
         regenerating.discard(wid)
         if output_dir is not None and not succeeded:
             discard_regeneration_files(output_dir, stamp)
+
+
+async def regenerate_workflow_audio(
+    wid: str,
+    *,
+    db: Callable[[], AbstractContextManager[Any]],
+    workflow_row: Callable[[Any], dict[str, Any]],
+    get_settings: Callable[[], dict[str, Any]],
+    media_dir: Callable[[str], Path],
+    save: Callable[..., None],
+    is_deleting: Callable[[str], bool],
+    regenerating: set[str],
+    speech: Callable[..., Any],
+    audio_extension: Callable[[str], str],
+    generate_subtitles: Callable[[Path, str, str], dict[str, Path]],
+    subtitle_language: Callable[[str], str],
+) -> None:
+    """Replace narration and its subtitles with a newly selected voice."""
+    stamp = time.time_ns()
+    output_dir: Path | None = None
+    succeeded = False
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT * FROM workflows WHERE id=?", (wid,)).fetchone()
+        if not row or is_deleting(wid):
+            return
+        item = workflow_row(row)
+        if item.get("status") != "completed":
+            return
+        voice = str(item.get("audio_regenerate_voice") or "").strip()
+        drafts = [draft for draft in item.get("polished_drafts") or [] if str(draft.get("text") or "").strip()]
+        if not voice or not drafts:
+            raise RuntimeError("缺少音色或分享稿，已保留原来的配音和字幕")
+        settings = get_settings()
+        output_dir = media_dir(item["output_dir"])
+        output_dir.mkdir(parents=False, exist_ok=True)
+        speech_rate = item.get("speech_rate", settings.get("speech_rate", 0))
+        background_music = item.get("background_music")
+        audio_items: list[dict[str, Any]] = []
+        subtitle_items: list[dict[str, Any]] = []
+        for index, draft in enumerate(drafts):
+            if is_deleting(wid):
+                return
+            base = output_dir / f"draft-{index + 1}-voice-1-{stamp}"
+            target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
+            used_real_speech = await speech(
+                draft["text"], voice, speech_rate, settings, target, background_music,
+                item.get("background_music_volume", .2), item.get("background_music_fade_in", 2),
+                item.get("background_music_fade_out", 2),
+            )
+            if is_deleting(wid):
+                return
+            actual = target if target.exists() else base.with_suffix(".wav")
+            if not actual.is_file() or actual.stat().st_size <= 0:
+                raise RuntimeError("配音生成失败，已保留原来的配音和字幕")
+            await asyncio.to_thread(generate_subtitles, actual, draft.get("text", ""), subtitle_language(voice))
+            if is_deleting(wid):
+                return
+            subtitle_paths = {suffix: actual.with_suffix(suffix) for suffix in _SUBTITLE_SUFFIXES}
+            if any(not path.is_file() for path in subtitle_paths.values()):
+                raise RuntimeError("字幕生成失败，已保留原来的配音和字幕")
+            audio_items.append({
+                "draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate,
+                "url": f"/media/{item['output_dir']}/{actual.name}",
+                "provider": "azure" if used_real_speech else "demo",
+            })
+            subtitle_items.append({
+                "draft_id": draft["id"], "voice": voice,
+                "srt_url": f"/media/{item['output_dir']}/{subtitle_paths['.srt'].name}",
+                "txt_url": f"/media/{item['output_dir']}/{subtitle_paths['.txt'].name}",
+                "json_url": f"/media/{item['output_dir']}/{subtitle_paths['.json'].name}",
+            })
+        with db() as conn:
+            current = conn.execute("SELECT status FROM workflows WHERE id=?", (wid,)).fetchone()
+        if not current or current["status"] != "completed" or is_deleting(wid):
+            return
+        previous_audio = item.get("audio") or []
+        previous_subtitles = item.get("subtitles") or []
+        save(wid, payload_update={
+            "audio": audio_items, "subtitles": subtitle_items, "voices": [voice],
+            "audio_regenerating": False, "audio_error": "", "audio_regenerate_voice": "",
+        })
+        succeeded = True
+        try:
+            remove_replaced_narration(output_dir, previous_audio, previous_subtitles, audio_items, subtitle_items)
+        except OSError:
+            return
+    except Exception as exc:
+        if not is_deleting(wid):
+            save(wid, payload_update={"audio_regenerating": False, "audio_error": str(exc)[:500], "audio_regenerate_voice": ""})
+    finally:
+        regenerating.discard(wid)
+        if output_dir is not None and not succeeded:
+            discard_audio_regeneration_files(output_dir, stamp)

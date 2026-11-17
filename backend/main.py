@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from backend.modules.contracts import (
-    BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
+    AudioRegenerateRequest, BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
     PromptTemplateCreate, PromptTemplateUpdate, WorkflowCreate, WorkflowOptions,
 )
 from backend.modules.serializers import workflow_row
@@ -42,10 +42,10 @@ from backend.integrations.video import video_command as build_video_command
 from backend.integrations.stock_video import download_stock_videos
 from backend.integrations.subtitles import generate_subtitles, subtitle_language
 from backend.modules.workflows.application import (
-    create_workflow, delete_workflow, queue_retry, queue_video_regeneration,
+    create_workflow, delete_workflow, queue_audio_regeneration, queue_retry, queue_video_regeneration,
     release_interrupted_video_regenerations,
 )
-from backend.modules.workflows.executor import execute_workflow, regenerate_workflow_videos
+from backend.modules.workflows.executor import execute_workflow, regenerate_workflow_audio, regenerate_workflow_videos
 from backend.modules.workflows.repository import get_workflow, list_workflows, save_workflow as persist_workflow
 from backend.api.system import build_router as build_system_router
 
@@ -116,6 +116,7 @@ app.mount("/voice-samples", StaticFiles(directory=VOICE_SAMPLES), name="voice-sa
 DELETING_WORKFLOWS: set[str] = set()
 DELETING_WORKFLOW_DIRS: dict[str, str] = {}
 REGENERATING_VIDEOS: set[str] = set()
+REGENERATING_AUDIO: set[str] = set()
 VOICE_DOWNLOAD_STATUS: dict[str, Any] = {"status": "idle", "total": 0, "completed": 0, "failed": 0}
 VOICE_TRANSLATION_LOCK = asyncio.Lock()
 VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流畅自然的AI配音。"
@@ -215,6 +216,16 @@ async def process_video_regeneration(wid: str) -> None:
         is_deleting=DELETING_WORKFLOWS.__contains__, regenerating=REGENERATING_VIDEOS,
         llm=llm, video_command=build_video_command,
         download_stock_videos=download_stock_videos, log_request=log_request,
+    )
+
+
+async def process_audio_regeneration(wid: str) -> None:
+    await regenerate_workflow_audio(
+        wid, db=db, workflow_row=workflow_row, get_settings=get_settings,
+        media_dir=workflow_media_dir, save=save_workflow,
+        is_deleting=DELETING_WORKFLOWS.__contains__, regenerating=REGENERATING_AUDIO,
+        speech=speech, audio_extension=audio_extension,
+        generate_subtitles=generate_subtitles, subtitle_language=subtitle_language,
     )
 
 
@@ -466,6 +477,7 @@ def workflows_batch_create(value: BatchWorkflowCreate, tasks: BackgroundTasks):
 @app.post("/api/workflows/{wid}/retry", status_code=202)
 def workflow_retry(wid: str, tasks: BackgroundTasks):
     REGENERATING_VIDEOS.discard(wid)
+    REGENERATING_AUDIO.discard(wid)
     queue_retry(db, save_workflow, wid)
     tasks.add_task(process_workflow, wid)
     return {"id": wid, "status": "queued"}
@@ -476,3 +488,10 @@ def workflow_regenerate_video(wid: str, tasks: BackgroundTasks):
     queue_video_regeneration(db, save_workflow, REGENERATING_VIDEOS, wid)
     tasks.add_task(process_video_regeneration, wid)
     return {"id": wid, "status": "completed", "video_regenerating": True}
+
+
+@app.post("/api/workflows/{wid}/regenerate-audio", status_code=202)
+def workflow_regenerate_audio(wid: str, value: AudioRegenerateRequest, tasks: BackgroundTasks):
+    queue_audio_regeneration(db, save_workflow, REGENERATING_AUDIO, wid, value.voice)
+    tasks.add_task(process_audio_regeneration, wid)
+    return {"id": wid, "status": "completed", "audio_regenerating": True}

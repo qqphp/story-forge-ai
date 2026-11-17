@@ -84,7 +84,7 @@ def queue_retry(
         row = conn.execute("SELECT id FROM workflows WHERE id=?", (wid,)).fetchone()
     if not row:
         raise HTTPException(404, "工作流不存在")
-    save_workflow(wid, status="queued", step=0, progress=0, payload_update={"error": "", "video_regenerating": False, "video_error": ""})
+    save_workflow(wid, status="queued", step=0, progress=0, payload_update={"error": "", "video_regenerating": False, "video_error": "", "audio_regenerating": False, "audio_error": ""})
 
 
 def queue_video_regeneration(
@@ -105,6 +105,8 @@ def queue_video_regeneration(
     payload = json.loads(row["payload"])
     if payload.get("video_regenerating"):
         raise HTTPException(409, "视频正在重新生成")
+    if payload.get("audio_regenerating"):
+        raise HTTPException(409, "配音正在重新生成，请稍后再重新生成视频")
     if not payload.get("audio"):
         raise HTTPException(409, "缺少配音，无法重新生成视频")
     if not payload.get("covers"):
@@ -117,6 +119,40 @@ def queue_video_regeneration(
         raise
 
 
+def queue_audio_regeneration(
+    db: Callable[[], AbstractContextManager[Any]],
+    save_workflow: Callable[..., None],
+    regenerating: set[str],
+    wid: str,
+    voice: str,
+) -> None:
+    """Mark a completed workflow so its narration and subtitles can be replaced."""
+    voice = voice.strip()
+    if not voice:
+        raise HTTPException(422, "请选择音色")
+    if wid in regenerating:
+        raise HTTPException(409, "配音正在重新生成")
+    with db() as conn:
+        row = conn.execute("SELECT status,payload FROM workflows WHERE id=?", (wid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "工作流不存在")
+    if row["status"] != "completed":
+        raise HTTPException(409, "只有已完成的作品可以重新生成配音")
+    payload = json.loads(row["payload"])
+    if payload.get("audio_regenerating"):
+        raise HTTPException(409, "配音正在重新生成")
+    if payload.get("video_regenerating"):
+        raise HTTPException(409, "视频正在重新生成，请稍后再重新生成配音")
+    if not payload.get("polished_drafts"):
+        raise HTTPException(409, "缺少分享稿，无法重新生成配音")
+    regenerating.add(wid)
+    try:
+        save_workflow(wid, payload_update={"audio_regenerating": True, "audio_error": "", "audio_regenerate_voice": voice})
+    except Exception:
+        regenerating.discard(wid)
+        raise
+
+
 def release_interrupted_video_regenerations(db: Callable[[], AbstractContextManager[Any]]) -> None:
     """Drop regeneration locks left behind when the process stopped mid-render."""
     with db() as conn:
@@ -124,10 +160,17 @@ def release_interrupted_video_regenerations(db: Callable[[], AbstractContextMana
         now = int(time.time())
         for row in rows:
             payload = json.loads(row["payload"])
-            if not payload.get("video_regenerating"):
+            changed = False
+            if payload.get("video_regenerating"):
+                payload["video_regenerating"] = False
+                payload["video_error"] = "重新生成已中断，请再试一次"
+                changed = True
+            if payload.get("audio_regenerating"):
+                payload["audio_regenerating"] = False
+                payload["audio_error"] = "重新生成已中断，请再试一次"
+                changed = True
+            if not changed:
                 continue
-            payload["video_regenerating"] = False
-            payload["video_error"] = "重新生成已中断，请再试一次"
             conn.execute(
                 "UPDATE workflows SET payload=?, updated_at=? WHERE id=?",
                 (json.dumps(payload, ensure_ascii=False), now, row["id"]),

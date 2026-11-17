@@ -918,5 +918,148 @@ class StoryForgeApiTests(unittest.TestCase):
         speech.assert_not_called(); cover.assert_not_called(); subtitles.assert_not_called()
 
 
+    def test_regenerated_audio_and_subtitles_are_used_by_later_video(self):
+        before = self._completed_workflow("重配后再合成")
+        output_dir = main.MEDIA / before["output_dir"]
+        old_audio = output_dir / "draft-1-voice-1.mp3"
+        old_srt = output_dir / "draft-1-voice-1.srt"
+        self.assertEqual(old_audio.read_bytes(), b"audio-bytes")
+        speech_calls = []
+
+        async def fake_speech(text, voice, rate, _settings, target, *_args):
+            speech_calls.append((text, voice, rate))
+            target.write_bytes(b"new-audio")
+            return True
+
+        def fake_subtitles(audio_path, _text, language):
+            self.assertEqual(language, "en")
+            from backend.integrations.subtitles import write_subtitle_files
+            return write_subtitle_files(audio_path, [{"start": 0.2, "end": 1.8, "text": "新字幕"}])
+
+        with patch.object(main, "speech", side_effect=fake_speech), patch.object(main, "generate_subtitles", side_effect=fake_subtitles):
+            response = self.client.post(f"/api/workflows/{before['id']}/regenerate-audio", json={"voice": " en-US-JennyNeural "})
+        self.assertEqual(response.status_code, 202, response.text)
+        regenerated = self.client.get(f"/api/workflows/{before['id']}").json()
+        self.assertEqual(regenerated["status"], "completed", regenerated.get("audio_error"))
+        self.assertFalse(regenerated["audio_regenerating"])
+        self.assertEqual(regenerated["audio_error"], "")
+        self.assertEqual(regenerated["voices"], ["en-US-JennyNeural"])
+        self.assertEqual(len(regenerated["audio"]), 1)
+        self.assertEqual(regenerated["audio"][0]["voice"], "en-US-JennyNeural")
+        self.assertEqual(regenerated["audio"][0]["speech_rate"], before["audio"][0]["speech_rate"])
+        self.assertEqual(regenerated["subtitles"][0]["voice"], "en-US-JennyNeural")
+        self.assertEqual(regenerated["covers"], before["covers"])
+        self.assertEqual(regenerated["videos"], before["videos"])
+        self.assertEqual(speech_calls, [("简短内容", "en-US-JennyNeural", before["audio"][0]["speech_rate"])])
+        new_audio = output_dir / Path(regenerated["audio"][0]["url"]).name
+        new_srt = output_dir / Path(regenerated["subtitles"][0]["srt_url"]).name
+        self.assertNotEqual(new_audio.name, old_audio.name)
+        self.assertEqual(new_audio.read_bytes(), b"new-audio")
+        self.assertIn("新字幕", new_srt.read_text(encoding="utf-8"))
+        self.assertFalse(old_audio.exists())
+        self.assertFalse(old_srt.exists())
+
+        self.client.put("/api/settings", json={**main.DEFAULT_SETTINGS, "burn_subtitles": True, "video_orientation": "portrait", "video_generation_method": "local"})
+        captured = []
+
+        class FinishedVideo:
+            returncode = 0
+            stdout = ""
+            stderr = b""
+
+        def fake_run(command, **_kwargs):
+            captured.append([str(part) for part in command])
+            Path(command[-1]).write_bytes(b"video-from-new-audio")
+            return FinishedVideo()
+
+        speech, subtitles = AsyncMock(), Mock()
+        with patch.object(main, "llm", AsyncMock(return_value="quiet lake")), patch.object(main, "speech", speech), \
+             patch.object(main, "generate_cover", AsyncMock()), patch.object(main, "generate_subtitles", subtitles), \
+             patch.object(executor.subprocess, "run", side_effect=fake_run):
+            video_response = self.client.post(f"/api/workflows/{before['id']}/regenerate-video")
+        self.assertEqual(video_response.status_code, 202)
+        speech.assert_not_called(); subtitles.assert_not_called()
+        after = self.client.get(f"/api/workflows/{before['id']}").json()
+        self.assertEqual(after.get("video_error"), "", captured)
+        self.assertEqual(after["audio"], regenerated["audio"])
+        self.assertEqual(after["subtitles"], regenerated["subtitles"])
+        command = captured[0]
+        narration = next(part for part in command if part.endswith(".mp3"))
+        self.assertEqual(Path(narration).name, new_audio.name)
+        ass = (output_dir / Path(after["videos"][0]["url"]).name).with_suffix(".ass").read_text(encoding="utf-8")
+        self.assertIn("新字幕", ass)
+        self.assertNotIn("简短内容", ass)
+
+    def test_failed_audio_regeneration_keeps_previous_narration(self):
+        before = self._completed_workflow("配音失败保留")
+        output_dir = main.MEDIA / before["output_dir"]
+
+        async def fake_speech(*_args, **_kwargs):
+            raise RuntimeError("语音服务不可用")
+
+        with patch.object(main, "speech", side_effect=fake_speech), patch.object(main, "generate_subtitles", Mock()):
+            response = self.client.post(f"/api/workflows/{before['id']}/regenerate-audio", json={"voice": "en-US-JennyNeural"})
+        self.assertEqual(response.status_code, 202)
+        after = self.client.get(f"/api/workflows/{before['id']}").json()
+        self.assertEqual(after["audio"], before["audio"])
+        self.assertEqual(after["subtitles"], before["subtitles"])
+        self.assertFalse(after["audio_regenerating"])
+        self.assertIn("语音服务不可用", after["audio_error"])
+        self.assertEqual((output_dir / "draft-1-voice-1.mp3").read_bytes(), b"audio-bytes")
+        self.assertEqual(list(output_dir.glob("draft-1-voice-1-*")), [])
+
+    def test_audio_regeneration_rejects_invalid_or_busy_work(self):
+        with patch.object(main, "process_workflow"):
+            queued = self.client.post("/api/workflows", json={"book_title": "仍在排队"})
+        rejected = self.client.post(f"/api/workflows/{queued.json()['id']}/regenerate-audio", json={"voice": "en-US-JennyNeural"})
+        self.assertEqual(rejected.status_code, 409)
+        self.assertIn("已完成", rejected.json()["detail"])
+        self.assertEqual(self.client.post("/api/workflows/missing/regenerate-audio", json={"voice": "en-US-JennyNeural"}).status_code, 404)
+        self.assertEqual(self.client.post(f"/api/workflows/{queued.json()['id']}/regenerate-audio", json={"voice": " "}).status_code, 422)
+        workflow = self._completed_workflow("配音条件")
+        main.save_workflow(workflow["id"], payload_update={"polished_drafts": []})
+        missing_drafts = self.client.post(f"/api/workflows/{workflow['id']}/regenerate-audio", json={"voice": "en-US-JennyNeural"})
+        self.assertEqual(missing_drafts.status_code, 409)
+        self.assertIn("分享稿", missing_drafts.json()["detail"])
+        busy = self._completed_workflow("正在合成视频")
+        main.save_workflow(busy["id"], payload_update={"video_regenerating": True})
+        while_video = self.client.post(f"/api/workflows/{busy['id']}/regenerate-audio", json={"voice": "en-US-JennyNeural"})
+        self.assertEqual(while_video.status_code, 409)
+        self.assertIn("视频", while_video.json()["detail"])
+        narrating = self._completed_workflow("正在重配")
+        main.save_workflow(narrating["id"], payload_update={"audio_regenerating": True})
+        while_audio = self.client.post(f"/api/workflows/{narrating['id']}/regenerate-video")
+        self.assertEqual(while_audio.status_code, 409)
+        self.assertIn("配音", while_audio.json()["detail"])
+
+    def test_audio_regeneration_cannot_start_twice(self):
+        workflow = self._completed_workflow("重复重配")
+
+        async def stuck(_wid):
+            return
+
+        with patch.object(main, "process_audio_regeneration", side_effect=stuck):
+            first = self.client.post(f"/api/workflows/{workflow['id']}/regenerate-audio", json={"voice": "en-US-JennyNeural"})
+            second = self.client.post(f"/api/workflows/{workflow['id']}/regenerate-audio", json={"voice": "en-US-JennyNeural"})
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 409)
+        current = self.client.get(f"/api/workflows/{workflow['id']}").json()
+        self.assertTrue(current["audio_regenerating"])
+        self.assertEqual(current["audio"], workflow["audio"])
+        self.assertEqual(current["subtitles"], workflow["subtitles"])
+        main.REGENERATING_AUDIO.discard(workflow["id"])
+
+    def test_interrupted_audio_regeneration_is_released_for_another_attempt(self):
+        from backend.modules.workflows.application import release_interrupted_video_regenerations
+        workflow = self._completed_workflow("配音中断")
+        main.save_workflow(workflow["id"], payload_update={"audio_regenerating": True, "audio_error": ""})
+        release_interrupted_video_regenerations(main.db)
+        restored = self.client.get(f"/api/workflows/{workflow['id']}").json()
+        self.assertFalse(restored["audio_regenerating"])
+        self.assertIn("中断", restored["audio_error"])
+        self.assertEqual(restored["audio"], workflow["audio"])
+        self.assertEqual(restored["subtitles"], workflow["subtitles"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -114,6 +114,16 @@ test("cover ratios are selected as prompts and generated images expose their met
   assert.match(css, /\.cover-gallery/);
 });
 
+test("completed works can regenerate narration and videos use that narration", () => {
+  assert.match(page, /\/regenerate-audio/);
+  assert.match(page, /重新生成配音/);
+  assert.match(page, /并同时重新生成字幕/);
+  assert.match(page, /使用当前最新的配音和字幕/);
+  assert.match(page, /<VoiceControl label="配音音色" voices=\{voiceChoices\}/);
+  assert.match(page, /disabled=\{audioRegenerating\|\|videoRegenerating\|\|!voice\.trim\(\)\}/);
+  assert.match(page, /disabled=\{videoRegenerating\|\|audioRegenerating\}/);
+});
+
 test("workflow details expose generated tags, topics and subtitles as an eight-step pipeline", () => {
   assert.match(page, /"生成配音", "生成字幕", "生成标签和话题"/);
   assert.match(page, /task\.tags\?\.length/);
