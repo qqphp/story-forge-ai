@@ -3,6 +3,7 @@
 import asyncio
 import os
 import subprocess
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -122,42 +123,179 @@ async def execute_workflow(
                 covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
         save(wid, step=8, progress=88, payload_update={"covers": covers})
 
-        videos, ffmpeg = [], os.getenv("FFMPEG_PATH", "ffmpeg")
-        orientation = settings.get("video_orientation", "portrait")
-        required_ratio = "16:9" if orientation == "landscape" else "9:16"
-        matching_covers = [cover for cover in covers if cover.get("image_ratio") == required_ratio]
-        if not matching_covers:
-            raise RuntimeError(f"没有可用于{required_ratio}视频的封面，请检查封面提示词图片尺寸")
-        stock_manifest = None
-        if settings.get("video_generation_method", "local") == "stock":
-            provider = settings.get("stock_video_provider", "pexels")
-            search_query = await llm([
-                {"role": "system", "content": "Create one concise English stock-video search query (3-7 words). Use only natural scenery, landscapes, weather, plants, water, architecture, or atmospheric details. Never mention people, persons, faces, characters, crowds, portraits, or human actions. Output only the query."},
-                {"role": "user", "content": f"Book title: {title}\nBook summary: {description}"},
-            ], settings, "视频搜索词生成")
-            search_query = natural_scenery_query((search_query or "serene cinematic natural landscape").strip().strip('"“”'))
-            clips = await download_stock_videos(
-                provider=provider,
-                api_base=settings[f"{provider}_api_base"],
-                api_key=settings.get(f"{provider}_api_key", ""),
-                query=search_query,
-                orientation=orientation,
-                output_dir=output_dir,
-                log_request=log_request,
-            )
-            normalized_clips = await asyncio.to_thread(normalize_stock_videos, ffmpeg, clips, output_dir, orientation)
-            stock_manifest = write_concat_manifest(output_dir / "stock-videos.ffconcat", normalized_clips)
-        for i, audio in enumerate(audio_items):
-            if is_deleting(wid): return
-            cover, narration = output_dir / Path(matching_covers[i % len(matching_covers)]["url"]).name, output_dir / Path(audio["url"]).name
-            out = output_dir / f"video-{i+1}.mp4"
-            result = await asyncio.to_thread(subprocess.run, video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest), capture_output=True, timeout=180)
-            if result.returncode == 0:
-                resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
-                videos.append({"draft_id": audio["draft_id"], "voice": audio["voice"], "url": f"/media/{item['output_dir']}/{out.name}", "background_music": background_music.get("name") if background_music else "", "orientation": orientation, "source": settings.get("stock_video_provider") if stock_manifest else "local", "resolution": resolution or ("1920 × 1080" if orientation == "landscape" else "1080 × 1920"), "duration": duration})
+        videos = await compose_videos(
+            wid, item, settings, output_dir, covers, audio_items, description=description,
+            is_deleting=is_deleting, llm=llm, video_command=video_command,
+            download_stock_videos=download_stock_videos, log_request=log_request,
+        )
+        if videos is None:
+            return
         save(wid, status="completed", step=8, progress=100, payload_update={"videos": videos})
     except Exception as exc:
         save(wid, status="failed", payload_update={"error": str(exc)[:500]})
     finally:
         if is_deleting(wid):
             cleanup_deleted(wid)
+
+
+def _media_name(url: str) -> str:
+    return Path(str(url).split("?", 1)[0]).name
+
+
+def remove_replaced_videos(output_dir: Path, previous: list[dict[str, Any]], current: list[dict[str, Any]]) -> None:
+    """Delete video files that this regeneration replaced, and leave every other asset."""
+    current_names = {_media_name(str(video.get("url", ""))) for video in current}
+    resolved_root = output_dir.resolve()
+    for video in previous:
+        name = _media_name(str(video.get("url", "")))
+        if not name or name in current_names or not name.startswith("video-") or not name.endswith(".mp4"):
+            continue
+        path = (output_dir / name).resolve()
+        if path.parent != resolved_root:
+            continue
+        path.unlink(missing_ok=True)
+        path.with_suffix(".ass").unlink(missing_ok=True)
+
+
+def discard_regeneration_files(output_dir: Path, stamp: int) -> None:
+    if not output_dir.is_dir():
+        return
+    for path in output_dir.glob(f"video-*-{stamp}.mp4"):
+        path.unlink(missing_ok=True)
+        path.with_suffix(".ass").unlink(missing_ok=True)
+
+
+async def compose_videos(
+    wid: str,
+    item: dict[str, Any],
+    settings: dict[str, Any],
+    output_dir: Path,
+    covers: list[dict[str, Any]],
+    audio_items: list[dict[str, Any]],
+    *,
+    description: str,
+    is_deleting: Callable[[str], bool],
+    llm: Callable[..., Any],
+    video_command: Callable[..., list[str]],
+    download_stock_videos: Callable[..., Any],
+    log_request: Callable[[str, str, dict[str, Any]], None],
+    output_name: Callable[[int], str] | None = None,
+) -> list[dict[str, Any]] | None:
+    """Compose one video per narration from existing covers, audio, and optional subtitles."""
+    videos, ffmpeg = [], os.getenv("FFMPEG_PATH", "ffmpeg")
+    orientation = settings.get("video_orientation", "portrait")
+    required_ratio = "16:9" if orientation == "landscape" else "9:16"
+    matching_covers = [cover for cover in covers if cover.get("image_ratio") == required_ratio]
+    if not matching_covers:
+        raise RuntimeError(f"没有可用于{required_ratio}视频的封面，请检查封面提示词图片尺寸")
+    background_music = item.get("background_music")
+    stock_manifest = None
+    if settings.get("video_generation_method", "local") == "stock":
+        provider = settings.get("stock_video_provider", "pexels")
+        search_query = await llm([
+            {"role": "system", "content": "Create one concise English stock-video search query (3-7 words). Use only natural scenery, landscapes, weather, plants, water, architecture, or atmospheric details. Never mention people, persons, faces, characters, crowds, portraits, or human actions. Output only the query."},
+            {"role": "user", "content": f"Book title: {item['book_title']}\nBook summary: {description}"},
+        ], settings, "视频搜索词生成")
+        search_query = natural_scenery_query((search_query or "serene cinematic natural landscape").strip().strip('"“”'))
+        clips = await download_stock_videos(
+            provider=provider,
+            api_base=settings[f"{provider}_api_base"],
+            api_key=settings.get(f"{provider}_api_key", ""),
+            query=search_query,
+            orientation=orientation,
+            output_dir=output_dir,
+            log_request=log_request,
+        )
+        normalized_clips = await asyncio.to_thread(normalize_stock_videos, ffmpeg, clips, output_dir, orientation)
+        stock_manifest = write_concat_manifest(output_dir / "stock-videos.ffconcat", normalized_clips)
+    for index, audio in enumerate(audio_items):
+        if is_deleting(wid):
+            return None
+        name = output_name(index) if output_name else f"video-{index + 1}.mp4"
+        if Path(name).name != name:
+            raise RuntimeError("视频文件名无效")
+        cover = output_dir / Path(matching_covers[index % len(matching_covers)]["url"]).name
+        narration = output_dir / Path(audio["url"]).name
+        out = output_dir / name
+        subtitles = narration.with_suffix(".srt") if settings.get("burn_subtitles") else None
+        if subtitles is not None and not subtitles.is_file():
+            raise RuntimeError("找不到与配音对应的 SRT 字幕，无法烧录")
+        result = await asyncio.to_thread(
+            subprocess.run,
+            video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles),
+            capture_output=True,
+            timeout=180,
+        )
+        if result.returncode == 0:
+            resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
+            videos.append({
+                "draft_id": audio["draft_id"], "voice": audio["voice"],
+                "url": f"/media/{item['output_dir']}/{out.name}",
+                "background_music": background_music.get("name") if background_music else "",
+                "orientation": orientation,
+                "source": settings.get("stock_video_provider") if stock_manifest else "local",
+                "resolution": resolution or ("1920 × 1080" if orientation == "landscape" else "1080 × 1920"),
+                "duration": duration,
+            })
+    return videos
+
+
+async def regenerate_workflow_videos(
+    wid: str,
+    *,
+    db: Callable[[], AbstractContextManager[Any]],
+    workflow_row: Callable[[Any], dict[str, Any]],
+    get_settings: Callable[[], dict[str, Any]],
+    media_dir: Callable[[str], Path],
+    save: Callable[..., None],
+    is_deleting: Callable[[str], bool],
+    regenerating: set[str],
+    llm: Callable[..., Any],
+    video_command: Callable[..., list[str]],
+    download_stock_videos: Callable[..., Any],
+    log_request: Callable[[str, str, dict[str, Any]], None],
+) -> None:
+    """Render videos again from the saved narration, covers, and subtitles."""
+    stamp = time.time_ns()
+    output_dir: Path | None = None
+    succeeded = False
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT * FROM workflows WHERE id=?", (wid,)).fetchone()
+        if not row or is_deleting(wid):
+            return
+        item = workflow_row(row)
+        if item.get("status") != "completed":
+            return
+        settings = get_settings()
+        output_dir = media_dir(item["output_dir"])
+        audio_items = item.get("audio") or []
+        videos = await compose_videos(
+            wid, item, settings, output_dir, item.get("covers") or [], audio_items,
+            description=item.get("description") or "",
+            is_deleting=is_deleting, llm=llm, video_command=video_command,
+            download_stock_videos=download_stock_videos, log_request=log_request,
+            output_name=lambda index: f"video-{index + 1}-{stamp}.mp4",
+        )
+        if videos is None or is_deleting(wid):
+            return
+        if len(videos) != len(audio_items):
+            raise RuntimeError("视频合成失败，已保留原来的视频")
+        with db() as conn:
+            current = conn.execute("SELECT status FROM workflows WHERE id=?", (wid,)).fetchone()
+        if not current or current["status"] != "completed" or is_deleting(wid):
+            return
+        previous = item.get("videos") or []
+        save(wid, payload_update={"videos": videos, "video_regenerating": False, "video_error": ""})
+        succeeded = True
+        try:
+            remove_replaced_videos(output_dir, previous, videos)
+        except OSError:
+            return
+    except Exception as exc:
+        if not is_deleting(wid):
+            save(wid, payload_update={"video_regenerating": False, "video_error": str(exc)[:500]})
+    finally:
+        regenerating.discard(wid)
+        if output_dir is not None and not succeeded:
+            discard_regeneration_files(output_dir, stamp)

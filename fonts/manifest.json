@@ -1,0 +1,53 @@
+{
+  "subtitle_family": "Noto Sans CJK SC",
+  "fonts": [
+    {
+      "id": "noto-sans-cjk-sc",
+      "role": "中文主字体",
+      "family": "Noto Sans CJK SC",
+      "file": "NotoSansCJKsc-Regular.otf",
+      "license": "SIL Open Font License 1.1",
+      "source": "https://github.com/notofonts/noto-cjk/releases/tag/Sans2.004"
+    },
+    {
+      "id": "source-han-serif",
+      "role": "中文宋体",
+      "family": "Source Han Serif SC",
+      "file": "SourceHanSerifSC-Regular.otf",
+      "license": "SIL Open Font License 1.1",
+      "source": "https://github.com/adobe-fonts/source-han-serif/releases/tag/2.003R"
+    },
+    {
+      "id": "lxgw-wenkai",
+      "role": "中文楷体",
+      "family": "LXGW WenKai",
+      "file": "LXGWWenKai-Regular.ttf",
+      "license": "SIL Open Font License 1.1",
+      "source": "https://github.com/lxgw/LxgwWenKai/releases/tag/v1.530"
+    },
+    {
+      "id": "inter",
+      "role": "英文主字体",
+      "family": "Inter",
+      "file": "Inter-Regular.otf",
+      "license": "SIL Open Font License 1.1",
+      "source": "https://github.com/rsms/inter/releases/tag/v4.1"
+    },
+    {
+      "id": "noto-sans-symbols-2",
+      "role": "特殊符号",
+      "family": "Noto Sans Symbols 2",
+      "file": "NotoSansSymbols2-Regular.ttf",
+      "license": "SIL Open Font License 1.1",
+      "source": "https://github.com/notofonts/symbols/releases/tag/NotoSansSymbols2-v2.008"
+    },
+    {
+      "id": "noto-color-emoji",
+      "role": "彩色表情",
+      "family": "Noto Color Emoji",
+      "file": "NotoColorEmoji.ttf",
+      "license": "SIL Open Font License 1.1",
+      "source": "https://github.com/googlefonts/noto-emoji"
+    }
+  ]
+}

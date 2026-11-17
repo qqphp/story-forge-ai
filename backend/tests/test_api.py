@@ -6,7 +6,7 @@ import unittest
 import xml.etree.ElementTree as ET
 import httpx
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from PIL import Image
 
@@ -31,6 +31,7 @@ class StoryForgeApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
+        main.REGENERATING_VIDEOS.clear()
         self.db_patch.stop(); self.media_patch.stop(); self.voice_samples_patch.stop(); self.voice_translations_patch.stop(); self.temp.cleanup()
 
     def test_health_and_empty_workflows(self):
@@ -62,7 +63,11 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(response.json()["pexels_api_key"], "••••••••")
         self.assertEqual(response.json()["pixabay_api_key"], "••••••••")
         self.assertEqual(response.json()["video_orientation"], "portrait")
+        self.assertEqual(response.json()["burn_subtitles"], False)
         self.assertEqual(response.json()["speech_rate"], 0)
+        enabled = self.client.put("/api/settings", json={**payload, "burn_subtitles": True})
+        self.assertEqual(enabled.status_code, 200)
+        self.assertEqual(enabled.json()["burn_subtitles"], True)
 
     def test_models_and_chat_use_text_address_and_key(self):
         settings = {
@@ -432,6 +437,58 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(workflow["status"], "completed")
         self.assertEqual(workflow["covers"][0]["image_ratio"], "16:9")
 
+    def test_workflow_burns_the_matching_srt_when_enabled(self):
+        self.client.put("/api/settings", json={**main.DEFAULT_SETTINGS, "burn_subtitles": True, "video_orientation": "portrait"})
+        with patch.object(main, "process_workflow"):
+            created = self.client.post("/api/workflows", json={"book_title": "字幕烧录"})
+        workflow_id = created.json()["id"]
+
+        async def fake_llm(*_args, **_kwargs):
+            return "简短内容"
+
+        async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
+            target.write_bytes(b"audio")
+            return False
+
+        def fake_subtitles(audio_path, text, _language):
+            from backend.integrations.subtitles import write_subtitle_files
+            return write_subtitle_files(audio_path, [{"start": 0, "end": 1.5, "text": text or "烧录这句"}])
+
+        async def fake_cover(path, *_args):
+            Image.new("RGB", (120, 160), "navy").save(path, "PNG")
+            return False, "120×160"
+
+        captured = []
+
+        class FinishedVideo:
+            returncode = 0
+            stdout = ""
+            stderr = b""
+
+        def fake_run(command, **_kwargs):
+            captured.append(command)
+            return FinishedVideo()
+
+        with patch.object(main, "llm", side_effect=fake_llm), \
+             patch.object(main, "speech", side_effect=fake_speech), \
+             patch.object(main, "generate_subtitles", side_effect=fake_subtitles), \
+             patch.object(main, "generate_cover", side_effect=fake_cover), \
+             patch.object(executor.subprocess, "run", side_effect=fake_run):
+            asyncio.run(main.process_workflow(workflow_id))
+        workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
+        self.assertEqual(workflow["status"], "completed", workflow.get("error"))
+        encodes = [command for command in captured if "-vf" in command]
+        self.assertEqual(len(encodes), len(workflow["videos"]))
+        video_filter = encodes[0][encodes[0].index("-vf") + 1]
+        self.assertIn("ass=", video_filter)
+        self.assertIn("fontsdir=", video_filter)
+        output_dir = main.MEDIA / workflow["output_dir"]
+        ass = (output_dir / "video-1.ass").read_text(encoding="utf-8")
+        self.assertIn("简短内容", ass)
+        self.assertIn("&H00FFFFFF", ass)
+        self.assertIn("&H80000000", ass)
+        self.assertTrue((output_dir / "draft-1-voice-1.srt").is_file())
+
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()
         writing = next(p for p in prompts if p["kind"] == "writing")
@@ -602,6 +659,234 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertFalse(output_dir.exists())
         self.assertTrue(unrelated.exists())
         self.assertEqual(self.client.get(f"/api/workflows/{workflow_id}").status_code, 404)
+
+    def _completed_workflow(self, title: str) -> dict:
+        with patch.object(main, "process_workflow"):
+            created = self.client.post("/api/workflows", json={"book_title": title})
+        workflow_id = created.json()["id"]
+
+        async def fake_llm(*_args, **_kwargs):
+            return "简短内容"
+
+        async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
+            target.write_bytes(b"audio-bytes")
+            return False
+
+        def fake_subtitles(audio_path, text, _language):
+            from backend.integrations.subtitles import write_subtitle_files
+            return write_subtitle_files(audio_path, [{"start": 0, "end": 1.5, "text": text or "原字幕"}])
+
+        async def fake_cover(path, *_args):
+            Image.new("RGB", (120, 160), "navy").save(path, "PNG")
+            return False, "120×160"
+
+        class FinishedVideo:
+            returncode = 0
+            stdout = ""
+            stderr = b""
+
+        def fake_run(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"original-video")
+            return FinishedVideo()
+
+        with patch.object(main, "llm", side_effect=fake_llm), \
+             patch.object(main, "speech", side_effect=fake_speech), \
+             patch.object(main, "generate_subtitles", side_effect=fake_subtitles), \
+             patch.object(main, "generate_cover", side_effect=fake_cover), \
+             patch.object(executor.subprocess, "run", side_effect=fake_run):
+            asyncio.run(main.process_workflow(workflow_id))
+        workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
+        self.assertEqual(workflow["status"], "completed", workflow.get("error"))
+        self.assertTrue(workflow["videos"])
+        return workflow
+
+    def test_completed_workflow_regenerates_video_from_current_settings_only(self):
+        before = self._completed_workflow("按设置重合成")
+        output_dir = main.MEDIA / before["output_dir"]
+        preserved = {
+            "audio": (output_dir / "draft-1-voice-1.mp3").read_bytes(),
+            "srt": (output_dir / "draft-1-voice-1.srt").read_bytes(),
+            "cover": (output_dir / "cover-1.png").read_bytes(),
+        }
+        self.client.put("/api/settings", json={**main.DEFAULT_SETTINGS, "video_orientation": "landscape", "burn_subtitles": True, "video_generation_method": "local"})
+        captured = []
+
+        class FinishedVideo:
+            returncode = 0
+            stdout = ""
+            stderr = b""
+
+        def fake_run(command, **_kwargs):
+            captured.append(command)
+            Path(command[-1]).write_bytes(b"regenerated-video")
+            return FinishedVideo()
+
+        llm, speech, cover, subtitles = AsyncMock(), AsyncMock(), AsyncMock(), Mock()
+        with patch.object(main, "llm", llm), patch.object(main, "speech", speech), \
+             patch.object(main, "generate_cover", cover), patch.object(main, "generate_subtitles", subtitles), \
+             patch.object(executor.subprocess, "run", side_effect=fake_run):
+            response = self.client.post(f"/api/workflows/{before['id']}/regenerate-video")
+        self.assertEqual(response.status_code, 202)
+        llm.assert_not_called(); speech.assert_not_called(); cover.assert_not_called(); subtitles.assert_not_called()
+        after = self.client.get(f"/api/workflows/{before['id']}").json()
+        self.assertEqual(after["status"], "completed", after.get("video_error"))
+        self.assertFalse(after["video_regenerating"])
+        self.assertEqual(after["video_error"], "")
+        for key in ("description", "original_drafts", "polished_drafts", "audio", "covers", "subtitles", "tags", "topics"):
+            self.assertEqual(after[key], before[key])
+        self.assertEqual((output_dir / "draft-1-voice-1.mp3").read_bytes(), preserved["audio"])
+        self.assertEqual((output_dir / "draft-1-voice-1.srt").read_bytes(), preserved["srt"])
+        self.assertEqual((output_dir / "cover-1.png").read_bytes(), preserved["cover"])
+        self.assertFalse((output_dir / "video-1.mp4").exists())
+        command = " ".join(str(part) for part in captured[0])
+        self.assertIn("cover-1.png", command)
+        self.assertNotIn("cover-2.png", command)
+        self.assertIn("scale=1920:1080", command)
+        self.assertIn(".ass", command)
+        new_video = output_dir / Path(after["videos"][0]["url"]).name
+        self.assertEqual(new_video.read_bytes(), b"regenerated-video")
+        self.assertEqual(after["videos"][0]["orientation"], "landscape")
+        self.assertEqual(after["videos"][0]["source"], "local")
+        self.assertEqual(after["videos"][0]["resolution"], "1920 × 1080")
+        ass = new_video.with_suffix(".ass").read_text(encoding="utf-8")
+        self.assertIn("PlayResX: 1920", ass)
+        self.assertIn("PlayResY: 1080", ass)
+        self.assertNotIn(before["id"], main.REGENERATING_VIDEOS)
+
+    def test_failed_video_regeneration_keeps_the_previous_video(self):
+        before = self._completed_workflow("合成失败保留")
+        output_dir = main.MEDIA / before["output_dir"]
+
+        class FailedVideo:
+            returncode = 1
+            stdout = ""
+            stderr = b"failed"
+
+        def fake_run(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"broken")
+            return FailedVideo()
+
+        speech, cover, subtitles = AsyncMock(), AsyncMock(), Mock()
+        with patch.object(main, "llm", AsyncMock()), patch.object(main, "speech", speech), \
+             patch.object(main, "generate_cover", cover), patch.object(main, "generate_subtitles", subtitles), \
+             patch.object(executor.subprocess, "run", side_effect=fake_run):
+            response = self.client.post(f"/api/workflows/{before['id']}/regenerate-video")
+        self.assertEqual(response.status_code, 202)
+        speech.assert_not_called(); cover.assert_not_called(); subtitles.assert_not_called()
+        after = self.client.get(f"/api/workflows/{before['id']}").json()
+        self.assertEqual(after["status"], "completed")
+        self.assertEqual(after["videos"], before["videos"])
+        self.assertEqual(after["polished_drafts"], before["polished_drafts"])
+        self.assertEqual(after["audio"], before["audio"])
+        self.assertEqual(after["covers"], before["covers"])
+        self.assertEqual(after["subtitles"], before["subtitles"])
+        self.assertFalse(after["video_regenerating"])
+        self.assertIn("保留原来的视频", after["video_error"])
+        self.assertEqual((output_dir / "video-1.mp4").read_bytes(), b"original-video")
+        self.assertEqual(list(output_dir.glob("video-1-*.mp4")), [])
+
+    def test_video_regeneration_rejects_unfinished_or_incomplete_works(self):
+        with patch.object(main, "process_workflow"):
+            queued = self.client.post("/api/workflows", json={"book_title": "仍在排队"})
+        rejected = self.client.post(f"/api/workflows/{queued.json()['id']}/regenerate-video")
+        self.assertEqual(rejected.status_code, 409)
+        self.assertIn("已完成", rejected.json()["detail"])
+        self.assertEqual(self.client.post("/api/workflows/missing/regenerate-video").status_code, 404)
+        workflow = self._completed_workflow("缺少配音")
+        main.save_workflow(workflow["id"], payload_update={"audio": []})
+        missing_audio = self.client.post(f"/api/workflows/{workflow['id']}/regenerate-video")
+        self.assertEqual(missing_audio.status_code, 409)
+        self.assertIn("配音", missing_audio.json()["detail"])
+
+    def test_video_regeneration_cannot_start_twice(self):
+        workflow = self._completed_workflow("重复点击")
+
+        async def stuck(_wid):
+            return
+
+        with patch.object(main, "process_video_regeneration", side_effect=stuck):
+            first = self.client.post(f"/api/workflows/{workflow['id']}/regenerate-video")
+            second = self.client.post(f"/api/workflows/{workflow['id']}/regenerate-video")
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 409)
+        current = self.client.get(f"/api/workflows/{workflow['id']}").json()
+        self.assertEqual(current["status"], "completed")
+        self.assertTrue(current["video_regenerating"])
+        self.assertEqual(current["videos"], workflow["videos"])
+
+    def test_interrupted_video_regeneration_is_released_for_another_attempt(self):
+        from backend.modules.workflows.application import release_interrupted_video_regenerations
+        workflow = self._completed_workflow("中断恢复")
+        main.save_workflow(workflow["id"], payload_update={"video_regenerating": True, "video_error": ""})
+        release_interrupted_video_regenerations(main.db)
+        restored = self.client.get(f"/api/workflows/{workflow['id']}").json()
+        self.assertFalse(restored["video_regenerating"])
+        self.assertIn("中断", restored["video_error"])
+        self.assertEqual(restored["videos"], workflow["videos"])
+        self.assertEqual(restored["audio"], workflow["audio"])
+
+    def test_stock_video_regeneration_downloads_footage_without_recreating_assets(self):
+        before = self._completed_workflow("素材重合成")
+        self.client.put("/api/settings", json={
+            **main.DEFAULT_SETTINGS, "video_orientation": "landscape", "video_generation_method": "stock",
+            "stock_video_provider": "pexels", "pexels_api_key": "pexels-test",
+        })
+        download_calls = {}
+
+        async def fake_download(**kwargs):
+            download_calls.update(kwargs)
+            paths = []
+            for index in range(3):
+                path = kwargs["output_dir"] / f"clip-{index}.mp4"
+                path.write_bytes(b"clip")
+                paths.append(path)
+            return paths
+
+        def fake_normalize(_ffmpeg, clips, _output_dir, orientation):
+            self.assertEqual(orientation, "landscape")
+            return clips
+
+        llm_types = []
+
+        async def fake_llm(_messages, _settings, request_type="文稿生成"):
+            llm_types.append(request_type)
+            return "misty mountain lake"
+
+        speech, cover, subtitles = AsyncMock(), AsyncMock(), Mock()
+        captured = []
+
+        class FinishedVideo:
+            returncode = 0
+            stdout = ""
+            stderr = b""
+
+        def fake_run(command, **_kwargs):
+            captured.append([str(part) for part in command])
+            Path(command[-1]).write_bytes(b"stock-video")
+            return FinishedVideo()
+
+        with patch.object(main, "download_stock_videos", side_effect=fake_download), \
+             patch.object(executor, "normalize_stock_videos", side_effect=fake_normalize), \
+             patch.object(main, "llm", side_effect=fake_llm), \
+             patch.object(main, "speech", speech), patch.object(main, "generate_cover", cover), \
+             patch.object(main, "generate_subtitles", subtitles), \
+             patch.object(executor.subprocess, "run", side_effect=fake_run):
+            response = self.client.post(f"/api/workflows/{before['id']}/regenerate-video")
+        self.assertEqual(response.status_code, 202)
+        after = self.client.get(f"/api/workflows/{before['id']}").json()
+        self.assertEqual(after.get("video_error"), "", captured)
+        self.assertEqual(after["status"], "completed")
+        self.assertEqual(llm_types, ["视频搜索词生成"])
+        self.assertIn("stock-videos.ffconcat", " ".join(captured[0]))
+        self.assertEqual(download_calls["provider"], "pexels")
+        self.assertEqual(download_calls["orientation"], "landscape")
+        self.assertEqual(download_calls["api_key"], "pexels-test")
+        self.assertEqual(after["videos"][0]["source"], "pexels")
+        self.assertEqual(after["videos"][0]["orientation"], "landscape")
+        self.assertNotEqual(after["videos"][0]["url"], before["videos"][0]["url"])
+        for key in ("description", "polished_drafts", "audio", "covers", "subtitles"):
+            self.assertEqual(after[key], before[key])
+        speech.assert_not_called(); cover.assert_not_called(); subtitles.assert_not_called()
 
 
 if __name__ == "__main__":

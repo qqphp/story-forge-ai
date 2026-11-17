@@ -41,8 +41,11 @@ from backend.integrations.speech import (
 from backend.integrations.video import video_command as build_video_command
 from backend.integrations.stock_video import download_stock_videos
 from backend.integrations.subtitles import generate_subtitles, subtitle_language
-from backend.modules.workflows.application import create_workflow, delete_workflow, queue_retry
-from backend.modules.workflows.executor import execute_workflow
+from backend.modules.workflows.application import (
+    create_workflow, delete_workflow, queue_retry, queue_video_regeneration,
+    release_interrupted_video_regenerations,
+)
+from backend.modules.workflows.executor import execute_workflow, regenerate_workflow_videos
 from backend.modules.workflows.repository import get_workflow, list_workflows, save_workflow as persist_workflow
 from backend.api.system import build_router as build_system_router
 
@@ -81,6 +84,7 @@ DEFAULT_SETTINGS = {
     "voices": ["zh-CN-XiaoxiaoNeural"],
     "speech_rate": 0,
     "video_orientation": "portrait",
+    "burn_subtitles": False,
     "video_generation_method": "local",
     "stock_video_provider": "pexels",
     "pexels_api_base": "https://api.pexels.com/v1/videos/search",
@@ -93,6 +97,7 @@ DEFAULT_SETTINGS = {
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    release_interrupted_video_regenerations(db)
     yield
 
 
@@ -110,6 +115,7 @@ app.mount("/media", StaticFiles(directory=MEDIA), name="media")
 app.mount("/voice-samples", StaticFiles(directory=VOICE_SAMPLES), name="voice-samples")
 DELETING_WORKFLOWS: set[str] = set()
 DELETING_WORKFLOW_DIRS: dict[str, str] = {}
+REGENERATING_VIDEOS: set[str] = set()
 VOICE_DOWNLOAD_STATUS: dict[str, Any] = {"status": "idle", "total": 0, "completed": 0, "failed": 0}
 VOICE_TRANSLATION_LOCK = asyncio.Lock()
 VOICE_SAMPLE_TEXT = "你好，欢迎收听这款流畅自然的AI配音。"
@@ -200,6 +206,16 @@ async def process_workflow(wid: str) -> None:
                            generate_cover=generate_cover, video_command=build_video_command,
                            download_stock_videos=download_stock_videos, log_request=log_request,
                            generate_subtitles=generate_subtitles, subtitle_language=subtitle_language)
+
+
+async def process_video_regeneration(wid: str) -> None:
+    await regenerate_workflow_videos(
+        wid, db=db, workflow_row=workflow_row, get_settings=get_settings,
+        media_dir=workflow_media_dir, save=save_workflow,
+        is_deleting=DELETING_WORKFLOWS.__contains__, regenerating=REGENERATING_VIDEOS,
+        llm=llm, video_command=build_video_command,
+        download_stock_videos=download_stock_videos, log_request=log_request,
+    )
 
 
 async def fetch_voice_items(settings: dict[str, Any]) -> tuple[list[dict[str, str]], bool]:
@@ -391,6 +407,14 @@ def workflows_batch_create(value: BatchWorkflowCreate, tasks: BackgroundTasks):
 
 @app.post("/api/workflows/{wid}/retry", status_code=202)
 def workflow_retry(wid: str, tasks: BackgroundTasks):
+    REGENERATING_VIDEOS.discard(wid)
     queue_retry(db, save_workflow, wid)
     tasks.add_task(process_workflow, wid)
     return {"id": wid, "status": "queued"}
+
+
+@app.post("/api/workflows/{wid}/regenerate-video", status_code=202)
+def workflow_regenerate_video(wid: str, tasks: BackgroundTasks):
+    queue_video_regeneration(db, save_workflow, REGENERATING_VIDEOS, wid)
+    tasks.add_task(process_video_regeneration, wid)
+    return {"id": wid, "status": "completed", "video_regenerating": True}

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import subprocess
 
+from backend.integrations.subtitle_burn import burn_subtitle_filter
+
 
 def probe_audio_duration(path: Path) -> float | None:
     ffprobe = os.getenv("FFPROBE_PATH", "ffprobe")
@@ -58,6 +60,9 @@ def video_command(
     duration: float | None = None,
     orientation: str = "portrait",
     stock_manifest: Path | None = None,
+    subtitles: Path | None = None,
+    fonts_dir: Path | None = None,
+    subtitle_font: str | None = None,
 ) -> list[str]:
     width, height = (1920, 1080) if orientation == "landscape" else (1080, 1920)
     if stock_manifest:
@@ -78,8 +83,11 @@ def video_command(
     command += ["-c:v", "libx264"]
     if not stock_manifest:
         command += ["-tune", "stillimage"]
-    command += ["-c:a", "aac", "-b:a", "128k", "-pix_fmt", "yuv420p", "-shortest",
-                "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p", str(output)]
+    filters = [f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"]
+    if subtitles is not None:
+        filters.append(burn_subtitle_filter(subtitles, output, width, height, fonts_dir, subtitle_font))
+    filters.append("format=yuv420p")
+    command += ["-c:a", "aac", "-b:a", "128k", "-pix_fmt", "yuv420p", "-shortest", "-vf", ",".join(filters), str(output)]
     return command
 
 

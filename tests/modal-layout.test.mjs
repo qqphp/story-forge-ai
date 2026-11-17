@@ -166,6 +166,9 @@ test("video settings configure orientation and royalty-free providers", () => {
   assert.match(page, /function VideoSettingsPage/);
   assert.match(page, /横版 16:9/);
   assert.match(page, /竖版 9:16/);
+  assert.match(page, /字幕烧录/);
+  assert.match(page, /burn_subtitles/);
+  assert.match(page, /烧录字幕/);
   assert.match(page, /输出 1920 × 1080/);
   assert.match(page, /输出 1080 × 1920/);
   assert.match(page, /引用无版权视频/);

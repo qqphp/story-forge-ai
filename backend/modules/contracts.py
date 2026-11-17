@@ -99,6 +99,7 @@ class SettingsPayload(BaseModel):
     voices: list[str] = ["zh-CN-XiaoxiaoNeural"]
     speech_rate: int = Field(default=0, ge=-50, le=100)
     video_orientation: str = Field(default="portrait", pattern="^(landscape|portrait)$")
+    burn_subtitles: bool = False
     video_generation_method: str = Field(default="local", pattern="^(local|stock)$")
     stock_video_provider: str = Field(default="pexels", pattern="^(pexels|pixabay)$")
     pexels_api_base: str = "https://api.pexels.com/v1/videos/search"
