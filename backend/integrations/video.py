@@ -48,6 +48,13 @@ def probe_video_metadata(path: Path) -> tuple[str | None, float | None]:
         return None, None
 
 
+def video_encode_timeout(duration: float | None) -> int:
+    """Give a narration enough time to encode, including subtitle burn on a busy machine."""
+    if duration is None or duration <= 0:
+        return 600
+    return min(3600, max(180, int(duration * 2 + 120)))
+
+
 def video_command(
     ffmpeg: str,
     cover: Path,
@@ -82,7 +89,7 @@ def video_command(
         command += ["-map", "0:v", "-map", "1:a"]
     command += ["-c:v", "libx264"]
     if not stock_manifest:
-        command += ["-tune", "stillimage"]
+        command += ["-preset", "ultrafast", "-tune", "stillimage"]
     filters = [f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"]
     if subtitles is not None:
         filters.append(burn_subtitle_filter(subtitles, output, width, height, fonts_dir, subtitle_font))

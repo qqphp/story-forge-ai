@@ -11,8 +11,20 @@ from typing import Any
 
 from backend.modules.contracts import DEFAULT_IMAGE_SIZES
 from backend.modules.workflows.content import demo_copy, generated_taxonomy
-from backend.integrations.video import normalize_stock_videos, probe_video_metadata, write_concat_manifest
+from backend.integrations.video import normalize_stock_videos, probe_audio_duration, probe_video_metadata, video_encode_timeout, write_concat_manifest
 from backend.integrations.stock_video import natural_scenery_query
+
+
+def share_draft_user_content(title: str, author: str | None, edition: str | None) -> str:
+    """User message for an original share draft: title, author, and edition only."""
+    lines = [f"书名：{title.strip()}"]
+    author_text = (author or "").strip()
+    edition_text = (edition or "").strip()
+    if author_text:
+        lines.append(f"作者：{author_text}")
+    if edition_text:
+        lines.append(f"版本：{edition_text}")
+    return "\n".join(lines)
 
 
 async def execute_workflow(
@@ -48,7 +60,7 @@ async def execute_workflow(
         save(wid, status="running", step=1, progress=8)
         await asyncio.sleep(.4)
         description = await llm([
-            {"role": "system", "content": "你是严谨的中文图书编辑。只输出100字左右的书籍简介，不虚构具体事实。"},
+            {"role": "system", "content": "你是严谨的中文图书编辑。只输出160个字以内的书籍简介，不虚构具体事实。"},
             {"role": "user", "content": f"书名：{title}；作者：{author or '未知'}；版本：{item['edition'] or '未指定'}"},
         ], settings)
         if is_deleting(wid): return
@@ -60,8 +72,8 @@ async def execute_workflow(
         for i, prompt in enumerate(prompts):
             if is_deleting(wid): return
             raw = await llm([
-                {"role": "system", "content": "你是专业读书博主。写一篇500字以内、事实谨慎、适合口播的中文分享稿。"},
-                {"role": "user", "content": f"书名：{title}\n作者：{author}\n简介：{description}\n额外要求：{prompt['text']}"},
+                {"role": "system", "content": prompt["text"]},
+                {"role": "user", "content": share_draft_user_content(title, author, item.get("edition"))},
             ], settings)
             raw = raw or demo_copy(title, author, prompt["text"], i)
             originals.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": raw})
@@ -278,12 +290,19 @@ async def compose_videos(
         subtitles = subtitle_file_for_audio(output_dir, audio, subtitle_items) if settings.get("burn_subtitles") else None
         if subtitles is not None and not subtitles.is_file():
             raise RuntimeError("找不到与配音对应的 SRT 字幕，无法烧录")
-        result = await asyncio.to_thread(
-            subprocess.run,
-            video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles),
-            capture_output=True,
-            timeout=180,
-        )
+        narration_duration = await asyncio.to_thread(probe_audio_duration, narration)
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles),
+                capture_output=True,
+                timeout=video_encode_timeout(narration_duration),
+            )
+        except subprocess.TimeoutExpired as exc:
+            waited = int(exc.timeout)
+            if narration_duration:
+                raise RuntimeError(f"视频合成超时：配音 {int(narration_duration)} 秒，编码等待超过 {waited} 秒") from exc
+            raise RuntimeError(f"视频合成超时：编码等待超过 {waited} 秒") from exc
         if result.returncode == 0:
             resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
             videos.append({

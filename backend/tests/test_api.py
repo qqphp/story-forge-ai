@@ -489,6 +489,41 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertIn("&H80000000", ass)
         self.assertTrue((output_dir / "draft-1-voice-1.srt").is_file())
 
+    def test_original_draft_request_uses_selected_prompt_and_book_identity_only(self):
+        writing = self.client.post("/api/prompts", json={
+            "kind": "writing", "name": "口播结构", "text": "用第一人称讲一个具体场景，控制在四百字内。",
+        }).json()
+        calls = []
+
+        async def fake_llm(messages, _settings, request_type="文稿生成"):
+            calls.append(messages)
+            if "书籍简介" in messages[0]["content"]:
+                return "一部关于选择的小说。"
+            raise RuntimeError("draft captured")
+
+        def run(payload):
+            calls.clear()
+            with patch.object(main, "process_workflow"):
+                created = self.client.post("/api/workflows", json=payload)
+            with patch.object(main, "llm", side_effect=fake_llm):
+                asyncio.run(main.process_workflow(created.json()["id"]))
+            return calls
+
+        full = run({
+            "book_title": "百年孤独", "author": "加西亚·马尔克斯", "edition": "精装纪念版",
+            "writing_prompt_ids": [writing["id"]],
+        })
+        self.assertEqual(full[0][0]["content"], "你是严谨的中文图书编辑。只输出160个字以内的书籍简介，不虚构具体事实。")
+        self.assertEqual(full[1], [
+            {"role": "system", "content": "用第一人称讲一个具体场景，控制在四百字内。"},
+            {"role": "user", "content": "书名：百年孤独\n作者：加西亚·马尔克斯\n版本：精装纪念版"},
+        ])
+
+        title_only = run({"book_title": "活着", "writing_prompt_ids": [writing["id"]]})
+        self.assertEqual(title_only[1][1]["content"], "书名：活着")
+        self.assertNotIn("简介", title_only[1][1]["content"])
+        self.assertNotIn("额外要求", title_only[1][1]["content"])
+
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()
         writing = next(p for p in prompts if p["kind"] == "writing")

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.integrations.stock_video import _pexels_items, _pixabay_items, download_stock_videos, natural_scenery_query
-from backend.integrations.video import probe_video_metadata, video_command, write_concat_manifest
+from backend.integrations.video import probe_video_metadata, video_command, video_encode_timeout, write_concat_manifest
 
 
 class StockVideoTests(unittest.TestCase):
@@ -99,6 +99,10 @@ class StockVideoTests(unittest.TestCase):
     def test_ffmpeg_commands_follow_orientation_and_loop_stock_playlist(self):
         local = video_command("ffmpeg", Path("cover.png"), Path("audio.mp3"), Path("out.mp4"), orientation="landscape")
         self.assertIn("scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,format=yuv420p", local)
+        self.assertEqual(local[local.index("-preset") + 1], "ultrafast")
+        self.assertEqual(video_encode_timeout(None), 600)
+        self.assertEqual(video_encode_timeout(484), 1088)
+        self.assertEqual(video_encode_timeout(10), 180)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             clips = [root / f"clip-{index}.mp4" for index in range(3)]
