@@ -33,7 +33,7 @@ export default function Home() {
 
   async function loadTasks() {
     try {
-      const res = await fetch(`${API}/api/workflows`);
+      const res = await fetch(`${API}/api/workflows`, {signal: AbortSignal.timeout(10000)});
       if (!res.ok) throw new Error();
       const data = await res.json();
       setConnected(true);
@@ -247,7 +247,7 @@ function DetailPanel({task,onClose,onRetry,onDelete,onRegenerateVideo,onRegenera
   const regenerateVideo=async()=>{setVideoBusy(true);setVideoMessage("");try{await onRegenerateVideo()}catch(error){setVideoMessage(error instanceof Error?error.message:"重新生成失败，请稍后重试")}finally{setVideoBusy(false)}};
   const regenerateAudio=async()=>{setAudioBusy(true);setAudioMessage("");try{await onRegenerateAudio(voice)}catch(error){setAudioMessage(error instanceof Error?error.message:"重新生成配音失败，请稍后重试")}finally{setAudioBusy(false)}};
   const remove=async()=>{setDeleting(true);setDeleteError("");try{await onDelete()}catch{setDeleteError("删除失败，请稍后重试");setDeleting(false)}};
-  const tabs=[['overview','概览'],['drafts','分享稿'],['covers','封面'],['audio','配音'],['subtitles','字幕'],['videos','视频']];
+  const tabs=[['overview','概览'],['drafts','分享稿'],['audio','配音'],['subtitles','字幕'],['covers','封面'],['videos','视频']];
   const pipelineStep=Math.max(0,task.step-1);
   const pipelineFailed=task.status==="failed";
   return <div className="drawer-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><aside className="drawer">

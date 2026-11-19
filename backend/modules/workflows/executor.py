@@ -112,6 +112,7 @@ async def execute_workflow(
                 "txt_url": f"/media/{item['output_dir']}/{narration.with_suffix('.txt').name}",
                 "json_url": f"/media/{item['output_dir']}/{narration.with_suffix('.json').name}",
             })
+            save(wid, progress=58 + int(10 * len(subtitle_items) / len(audio_items)), payload_update={"subtitles": subtitle_items})
         save(wid, step=6, progress=68, payload_update={"subtitles": subtitle_items})
 
         share_text = "\n\n---\n\n".join(draft["text"] for draft in polished)
@@ -311,6 +312,9 @@ async def compose_videos(
             if narration_duration:
                 raise RuntimeError(f"视频合成超时：配音 {int(narration_duration)} 秒，编码等待超过 {waited} 秒") from exc
             raise RuntimeError(f"视频合成超时：编码等待超过 {waited} 秒") from exc
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace")[-1000:]
+            raise RuntimeError(f"视频合成失败，已保留原来的视频（如有）：{detail}")
         if result.returncode == 0:
             resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
             videos.append({

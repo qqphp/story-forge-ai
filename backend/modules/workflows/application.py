@@ -154,13 +154,18 @@ def queue_audio_regeneration(
 
 
 def release_interrupted_video_regenerations(db: Callable[[], AbstractContextManager[Any]]) -> None:
-    """Drop regeneration locks left behind when the process stopped mid-render."""
+    """Release interrupted work without discarding already generated assets."""
     with db() as conn:
-        rows = conn.execute("SELECT id, payload FROM workflows").fetchall()
+        rows = conn.execute("SELECT id, status, payload FROM workflows").fetchall()
         now = int(time.time())
         for row in rows:
             payload = json.loads(row["payload"])
             changed = False
+            status = row["status"]
+            if status in ("running", "queued"):
+                status = "failed"
+                payload["error"] = "制作因服务重启而中断，请重试；已生成的产物已保留"
+                changed = True
             if payload.get("video_regenerating"):
                 payload["video_regenerating"] = False
                 payload["video_error"] = "重新生成已中断，请再试一次"
@@ -172,6 +177,6 @@ def release_interrupted_video_regenerations(db: Callable[[], AbstractContextMana
             if not changed:
                 continue
             conn.execute(
-                "UPDATE workflows SET payload=?, updated_at=? WHERE id=?",
-                (json.dumps(payload, ensure_ascii=False), now, row["id"]),
+                "UPDATE workflows SET status=?, payload=?, updated_at=? WHERE id=?",
+                (status, json.dumps(payload, ensure_ascii=False), now, row["id"]),
             )

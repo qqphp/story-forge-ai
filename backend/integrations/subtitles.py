@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,8 @@ from typing import Any
 _MODEL: Any = None
 _MODEL_NAME: str | None = None
 _MODEL_LOCK = threading.RLock()
+_PROCESS_LOCK = threading.Lock()
+SUBTITLE_TIMEOUT = 900
 
 
 def subtitle_language(voice: str) -> str:
@@ -112,12 +116,38 @@ def _cues_from_result(result: Any) -> list[dict[str, Any]]:
     return cues
 
 
-def generate_subtitles(audio_path: Path, text: str, language: str) -> dict[str, Path]:
+def _align_subtitles(audio_path: Path, text: str, language: str) -> dict[str, Path]:
     """Align the spoken script to the audio and write the three subtitle files."""
     with _MODEL_LOCK:
         model = _load_model()
         if text.strip():
-            result = model.align(str(audio_path), text, language=language)
+            result = model.align(str(audio_path), text, language=language, verbose=False)
         else:
-            result = model.transcribe(str(audio_path), language=language)
+            result = model.transcribe(str(audio_path), language=language, verbose=False)
     return write_subtitle_files(audio_path, _cues_from_result(result))
+
+
+def generate_subtitles(audio_path: Path, text: str, language: str) -> dict[str, Path]:
+    """Bound model work to one killable process, isolated from the API runtime."""
+    if not _PROCESS_LOCK.acquire(timeout=SUBTITLE_TIMEOUT):
+        raise RuntimeError("字幕任务排队超时，请稍后重试")
+    try:
+        env = {**os.environ, "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "PYTHONIOENCODING": "utf-8"}
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "backend.integrations.subtitle_worker"],
+                input=json.dumps({"audio_path": str(audio_path.resolve()), "text": text, "language": language}).encode("utf-8"),
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                cwd=Path(__file__).resolve().parents[2], env=env, timeout=SUBTITLE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"字幕生成超时（超过 {SUBTITLE_TIMEOUT} 秒），已终止字幕进程，请重试") from exc
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()[-1000:]
+            raise RuntimeError(f"字幕生成失败：{detail or '字幕进程异常退出'}")
+        paths = {suffix: audio_path.with_suffix('.' + suffix) for suffix in ("srt", "txt", "json")}
+        if any(not path.is_file() or not path.stat().st_size for path in paths.values()):
+            raise RuntimeError("字幕生成失败：字幕文件不完整")
+        return paths
+    finally:
+        _PROCESS_LOCK.release()

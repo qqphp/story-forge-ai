@@ -27,6 +27,11 @@ class StoryForgeApiTests(unittest.TestCase):
         self.db_patch.start(); self.media_patch.start(); self.voice_samples_patch.start(); self.voice_translations_patch.start()
         main.MEDIA.mkdir(exist_ok=True); main.VOICE_SAMPLES.mkdir(exist_ok=True)
         main.init_db()
+        # Encoding stubs must not also intercept ffprobe and overwrite its inputs.
+        for name, value in (("probe_audio_duration", 1.5), ("probe_video_metadata", (None, 1.5))):
+            probe_patch = patch.object(executor, name, return_value=value)
+            probe_patch.start()
+            self.addCleanup(probe_patch.stop)
         self.client = TestClient(main.app)
 
     def tearDown(self):
@@ -381,14 +386,14 @@ class StoryForgeApiTests(unittest.TestCase):
             Image.new("RGB", (120, 160), "navy").save(path, "PNG")
             return True, "120×160"
 
-        class FailedVideo:
-            returncode = 1
+        class FinishedVideo:
+            returncode = 0
 
         with patch.object(main, "llm", side_effect=fake_llm), \
              patch.object(main, "speech", side_effect=fake_speech), \
              patch.object(main, "generate_subtitles", side_effect=fake_subtitles), \
              patch.object(main, "generate_cover", side_effect=fake_cover), \
-             patch.object(executor.subprocess, "run", return_value=FailedVideo()):
+             patch.object(executor.subprocess, "run", return_value=FinishedVideo()):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["step"], 8)
@@ -424,14 +429,14 @@ class StoryForgeApiTests(unittest.TestCase):
             Image.new("RGB", (120, 160), "navy").save(path, "PNG")
             return False, "120×160"
 
-        class FailedVideo:
-            returncode = 1
+        class FinishedVideo:
+            returncode = 0
 
         with patch.object(main, "llm", side_effect=fake_llm), \
              patch.object(main, "speech", side_effect=fake_speech), \
              patch.object(main, "generate_subtitles", side_effect=fake_subtitles), \
              patch.object(main, "generate_cover", side_effect=fake_cover), \
-             patch.object(executor.subprocess, "run", return_value=FailedVideo()):
+             patch.object(executor.subprocess, "run", return_value=FinishedVideo()):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["status"], "completed")
@@ -892,6 +897,17 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertFalse(restored["video_regenerating"])
         self.assertIn("中断", restored["video_error"])
         self.assertEqual(restored["videos"], workflow["videos"])
+        self.assertEqual(restored["audio"], workflow["audio"])
+
+    def test_interrupted_creation_is_failed_and_keeps_completed_steps(self):
+        from backend.modules.workflows.application import release_interrupted_video_regenerations
+        workflow = self._completed_workflow("制作中断")
+        main.save_workflow(workflow["id"], status="running", step=5, progress=58)
+        release_interrupted_video_regenerations(main.db)
+        restored = self.client.get(f"/api/workflows/{workflow['id']}").json()
+        self.assertEqual(restored["status"], "failed")
+        self.assertEqual(restored["step"], 5)
+        self.assertIn("中断", restored["error"])
         self.assertEqual(restored["audio"], workflow["audio"])
 
     def test_stock_video_regeneration_downloads_footage_without_recreating_assets(self):
