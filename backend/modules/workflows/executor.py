@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.modules.contracts import DEFAULT_IMAGE_SIZES
+from backend.integrations.local_covers import generate_local_covers
 from backend.modules.workflows.content import demo_copy, generated_taxonomy
 from backend.integrations.video import normalize_stock_videos, probe_audio_duration, probe_video_metadata, video_encode_timeout, write_concat_manifest
 from backend.integrations.stock_video import natural_scenery_query
@@ -124,16 +125,20 @@ async def execute_workflow(
         tags, topics = generated_taxonomy(taxonomy_raw, title)
         save(wid, step=7, progress=76, payload_update={"tags": tags, "topics": topics})
 
-        cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")] or [{"text": "克制、文学感、适合短视频竖版", "enabled": True, "image_sizes": DEFAULT_IMAGE_SIZES}]
-        covers, cover_index = [], 0
-        for prompt in cover_prompts:
-            for image_ratio in prompt.get("image_sizes") or DEFAULT_IMAGE_SIZES:
-                if is_deleting(wid): return
-                cover_index += 1
-                path = output_dir / f"cover-{cover_index}.png"
-                used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
-                if is_deleting(wid): return
-                covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
+        if item.get("local_cover", False):
+            covers = await asyncio.to_thread(generate_local_covers, output_dir, title, author)
+            if is_deleting(wid): return
+        else:
+            cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")] or [{"text": "克制、文学感、适合短视频竖版", "enabled": True, "image_sizes": DEFAULT_IMAGE_SIZES}]
+            covers, cover_index = [], 0
+            for prompt in cover_prompts:
+                for image_ratio in prompt.get("image_sizes") or DEFAULT_IMAGE_SIZES:
+                    if is_deleting(wid): return
+                    cover_index += 1
+                    path = output_dir / f"cover-{cover_index}.png"
+                    used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
+                    if is_deleting(wid): return
+                    covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
         save(wid, step=8, progress=88, payload_update={"covers": covers})
 
         videos = await compose_videos(
@@ -303,7 +308,7 @@ async def compose_videos(
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
-                video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles),
+                video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles, subtitle_style=settings.get("subtitle_style")),
                 capture_output=True,
                 timeout=video_encode_timeout(narration_duration),
             )

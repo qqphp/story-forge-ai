@@ -48,7 +48,7 @@ def build_router(
     def health(): return {"ok": True, "service": "StoryForge AI"}
 
     @router.get("/api/request-logs")
-    def request_logs(request_type: str = "", start_time: int | None = None, end_time: int | None = None, page: int = Query(1, ge=1), page_size: int = Query(30, ge=1, le=100)):
+    def request_logs(request_type: str = "", start_time: int | None = None, end_time: int | None = None, page: int = Query(1, ge=1), page_size: int = Query(12, ge=1, le=100)):
         return list_logs(db, request_type, start_time, end_time, page, page_size)
 
     @router.delete("/api/request-logs")

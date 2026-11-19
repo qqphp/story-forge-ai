@@ -423,8 +423,8 @@ function localesOf(voice: VoiceItem): string[] {
 }
 
 function dimensionValues(voice: VoiceItem, key: VoiceFilterKey, language: string): string[] {
-  if (key === "language") return unique(localesOf(voice).map(languageCode));
-  if (key === "locale") return localesOf(voice).filter(locale => !language || languageCode(locale) === language);
+  if (key === "language") return voice.locale ? [languageCode(voice.locale)] : [];
+  if (key === "locale") return voice.locale && (!language || languageCode(voice.locale) === language) ? [voice.locale] : [];
   if (key === "gender") return voice.gender ? [voice.gender] : [];
   if (key === "voiceType") return voice.voice_type ? [voice.voice_type] : [];
   if (key === "status") return voice.status ? [voice.status] : [];

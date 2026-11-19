@@ -6,7 +6,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Any
 
-from backend.modules.contracts import SettingsPayload
+from backend.modules.contracts import SettingsPayload, SubtitleStyle
 
 
 def _speech_base_from_region(region: str, default: str) -> str:
@@ -31,6 +31,7 @@ def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[
     stored.pop("api_base", None)
     stored.pop("api_key", None)
     result = defaults | stored
+    result["subtitle_style"] = SubtitleStyle.model_validate(result.get("subtitle_style") or {}).model_dump()
     if "azure_speech_base" not in stored:
         if legacy_speech_region:
             result["azure_speech_base"] = _speech_base_from_region(legacy_speech_region, defaults["azure_speech_base"])
@@ -61,6 +62,8 @@ def to_public(settings: dict[str, Any]) -> dict[str, Any]:
 
 def save_settings(db: Callable[[], AbstractContextManager[Any]], current: dict[str, Any], value: SettingsPayload) -> dict[str, Any]:
     incoming = value.model_dump()
+    if "subtitle_style" not in value.model_fields_set:
+        incoming["subtitle_style"] = current.get("subtitle_style", SubtitleStyle().model_dump())
     for key in ("text_api_key", "image_api_key", "azure_speech_key", "pexels_api_key", "pixabay_api_key"):
         if incoming[key] == "••••••••":
             incoming[key] = current.get(key, "")

@@ -16,6 +16,7 @@ class PromptItem(BaseModel):
 
 
 class WorkflowOptions(BaseModel):
+    local_cover: bool = False
     writing_prompt_ids: list[str] = Field(default_factory=list)
     cover_prompt_ids: list[str] = Field(default_factory=list)
     voice: str = Field(default="zh-CN-XiaoxiaoNeural", min_length=1, max_length=120)
@@ -98,6 +99,31 @@ class ModelListRequest(BaseModel):
         return value
 
 
+class SubtitleStyle(BaseModel):
+    font_id: Literal["noto-sans-cjk-sc", "source-han-serif", "lxgw-wenkai", "inter"] = "noto-sans-cjk-sc"
+    font_size: int = Field(default=52, ge=24, le=96)
+    text_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9a-fA-F]{6}$")
+    bold: bool = False
+    mode: Literal["box", "outline"] = "box"
+    background_color: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    background_opacity: float = Field(default=.5, ge=0, le=1)
+    outline_color: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    outline_width: int = Field(default=2, ge=0, le=8)
+    position: Literal["top", "center", "bottom"] = "bottom"
+    margin_horizontal: int = Field(default=48, ge=0, le=200)
+    margin_vertical: int | None = Field(default=None, ge=0, le=300)
+
+
+class SubtitlePreview(BaseModel):
+    orientation: Literal["landscape", "portrait"] = "portrait"
+    style: SubtitleStyle = Field(default_factory=SubtitleStyle)
+    text: str = Field(default="慢下来，读一本好书。\n在文字中遇见更大的世界。", min_length=1, max_length=200)
+
+
+class MusicDefaultRequest(BaseModel):
+    is_default: bool
+
+
 class SettingsPayload(BaseModel):
     text_api_base: str = "https://api.teamorouter.com/v1"
     text_api_key: str = ""
@@ -112,6 +138,7 @@ class SettingsPayload(BaseModel):
     speech_rate: int = Field(default=0, ge=-50, le=100)
     video_orientation: str = Field(default="portrait", pattern="^(landscape|portrait)$")
     burn_subtitles: bool = False
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
     video_generation_method: str = Field(default="local", pattern="^(local|stock)$")
     stock_video_provider: str = Field(default="pexels", pattern="^(pexels|pixabay)$")
     pexels_api_base: str = "https://api.pexels.com/v1/videos/search"

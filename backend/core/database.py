@@ -51,6 +51,10 @@ def initialize_schema(db: Callable[[], ContextManager[sqlite3.Connection]]) -> N
             CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
             """
         )
+        music_columns = {column["name"] for column in conn.execute("PRAGMA table_info(background_music)")}
+        if "is_default" not in music_columns:
+            conn.execute("ALTER TABLE background_music ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0,1))")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_music_single_default ON background_music(is_default) WHERE is_default=1")
         columns = {column["name"] for column in conn.execute("PRAGMA table_info(prompt_templates)")}
         if "image_sizes" not in columns:
             conn.execute("ALTER TABLE prompt_templates ADD COLUMN image_sizes TEXT NOT NULL DEFAULT '[\"2:3\"]'")

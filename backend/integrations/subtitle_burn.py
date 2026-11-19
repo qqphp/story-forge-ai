@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 
 from backend.integrations.fonts import bundled_fonts_dir, subtitle_font_family
+from backend.modules.contracts import SubtitleStyle
+from backend.integrations.fonts import load_font_manifest
 
 
 # ASS stores alpha inverted: 00 is opaque and FF is fully transparent.
@@ -151,13 +153,41 @@ def layout_subtitle_cues(cues: list[dict[str, float | str]], max_units: float, m
     return laid
 
 
-def render_burn_ass(srt_text: str, width: int, height: int, font_name: str) -> str:
+def _ass_color(color: str, opacity: float = 1) -> str:
+    return f"&H{round((1 - opacity) * 255):02X}{color[5:7]}{color[3:5]}{color[1:3]}".upper()
+
+
+def subtitle_fonts() -> list[dict[str, str]]:
+    allowed = SubtitleStyle.model_fields["font_id"].annotation.__args__
+    return [{"id": f["id"], "name": f["role"], "family": f["family"]} for f in load_font_manifest()["fonts"] if f["id"] in allowed]
+
+
+def render_burn_ass(srt_text: str, width: int, height: int, font_name: str, style: dict | None = None) -> str:
     cues = parse_srt(srt_text)
     if not cues:
         raise RuntimeError("字幕文件没有可烧录的内容")
     font_size, margin_v, padding = subtitle_layout(width, height)
+    margin_h, alignment, bold = _SIDE_MARGIN, 2, 0
+    foreground, outline, back = WHITE, "&H00000000", TRANSLUCENT_DARK
+    border_style = 4
+    if style is not None:
+        options = SubtitleStyle.model_validate(style)
+        scale = min(width, height) / 1080
+        font_name = next(f["family"] for f in subtitle_fonts() if f["id"] == options.font_id)
+        font_size = round(options.font_size * scale)
+        margin_h = round(options.margin_horizontal * scale)
+        if options.margin_vertical is not None:
+            margin_v = round(options.margin_vertical * scale)
+        alignment = {"bottom": 2, "center": 5, "top": 8}[options.position]
+        bold = -1 if options.bold else 0
+        foreground = _ass_color(options.text_color)
+        outline = _ass_color(options.outline_color)
+        back = _ass_color(options.background_color, options.background_opacity)
+        border_style = 4 if options.mode == "box" else 1
+        padding = max(8, round(font_size * .22)) if options.mode == "box" else round(options.outline_width * scale)
     # libass wraps on spaces. A Chinese cue has none, so it stays one line and runs past the frame.
-    fitted = layout_subtitle_cues(cues, subtitle_line_capacity(width, height))
+    capacity = max(6.0, (width - margin_h * 2 - padding * 2) / font_size * .92)
+    fitted = layout_subtitle_cues(cues, capacity)
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -168,7 +198,7 @@ def render_burn_ass(srt_text: str, width: int, height: int, font_name: str) -> s
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,{font_name},{font_size},{WHITE},&H000000FF,&H00000000,{TRANSLUCENT_DARK},0,0,0,0,100,100,0,0,4,{padding},0,2,{_SIDE_MARGIN},{_SIDE_MARGIN},{margin_v},1",
+        f"Style: Default,{font_name},{font_size},{foreground},&H000000FF,{outline},{back},{bold},0,0,0,100,100,0,0,{border_style},{padding},0,{alignment},{margin_h},{margin_h},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -199,6 +229,7 @@ def burn_subtitle_filter(
     height: int,
     fonts_dir: Path | None = None,
     font_name: str | None = None,
+    style: dict | None = None,
 ) -> str:
     """Write a styled ASS sidecar and return the FFmpeg ``ass`` filter."""
     if not srt_path.is_file():
@@ -206,5 +237,5 @@ def burn_subtitle_filter(
     fonts = fonts_dir or bundled_fonts_dir()
     family = font_name or subtitle_font_family()
     ass_path = output.with_suffix(".ass")
-    ass_path.write_text(render_burn_ass(srt_path.read_text(encoding="utf-8-sig"), width, height, family), encoding="utf-8")
+    ass_path.write_text(render_burn_ass(srt_path.read_text(encoding="utf-8-sig"), width, height, family, style), encoding="utf-8")
     return f"ass={escape_ffmpeg_filter_path(ass_path)}:fontsdir={escape_ffmpeg_filter_path(fonts)}"

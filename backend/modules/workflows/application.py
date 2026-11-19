@@ -36,10 +36,12 @@ def create_workflow(
             "SELECT id,name,text,image_sizes FROM prompt_templates WHERE kind='cover' ORDER BY created_at LIMIT 1", cover_ids
         ).fetchall()
         music_row = conn.execute("SELECT id,name,url,category FROM background_music WHERE id=?", (options.background_music_id,)).fetchone() if options.background_music_id else None
+        if "background_music_id" not in options.model_fields_set:
+            music_row = conn.execute("SELECT id,name,url,category FROM background_music WHERE is_default=1").fetchone()
         if options.background_music_id and not music_row:
             raise HTTPException(422, "选择的背景音乐不存在")
     output_dir, _ = create_media_dir()
-    payload = {"output_dir": output_dir,
+    payload = {"output_dir": output_dir, "local_cover": options.local_cover,
                "writing_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "enabled": True} for r in writing_rows],
                "cover_prompts": [{"id": r["id"], "name": r["name"], "text": r["text"], "image_sizes": json.loads(r["image_sizes"]), "enabled": True} for r in cover_rows],
                "voices": [options.voice], "speech_rate": options.speech_rate,

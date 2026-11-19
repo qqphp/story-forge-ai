@@ -70,6 +70,7 @@ def video_command(
     subtitles: Path | None = None,
     fonts_dir: Path | None = None,
     subtitle_font: str | None = None,
+    subtitle_style: dict | None = None,
 ) -> list[str]:
     width, height = (1920, 1080) if orientation == "landscape" else (1080, 1920)
     if stock_manifest:
@@ -92,7 +93,7 @@ def video_command(
         command += ["-preset", "ultrafast", "-tune", "stillimage"]
     filters = [f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"]
     if subtitles is not None:
-        filters.append(burn_subtitle_filter(subtitles, output, width, height, fonts_dir, subtitle_font))
+        filters.append(burn_subtitle_filter(subtitles, output, width, height, fonts_dir, subtitle_font, subtitle_style))
     filters.append("format=yuv420p")
     command += ["-c:a", "aac", "-b:a", "128k", "-pix_fmt", "yuv420p", "-shortest", "-vf", ",".join(filters), str(output)]
     return command

@@ -11,12 +11,12 @@ from typing import Any
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from backend.modules.contracts import (
     AudioRegenerateRequest, BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
-    PromptTemplateCreate, PromptTemplateUpdate, WorkflowCreate, WorkflowOptions,
+    PromptTemplateCreate, PromptTemplateUpdate, WorkflowCreate, WorkflowOptions, MusicDefaultRequest, SubtitlePreview,
 )
 from backend.modules.serializers import workflow_row
 from backend.core.database import connection, initialize_schema
@@ -26,7 +26,9 @@ from backend.modules.media.storage import (
     workflow_media_dir as resolve_media_directory,
 )
 from backend.modules.prompts.service import create_template, delete_template, list_templates, update_template
-from backend.modules.media.music import create_music, delete_music, list_music, update_music
+from backend.modules.media.music import create_music, delete_music, list_music, update_music, set_default_music
+from backend.integrations.subtitle_burn import subtitle_fonts
+from backend.integrations.subtitle_preview import render_preview
 from backend.modules.request_logs.service import clear_logs, list_logs, record_log
 from backend.modules.settings.service import load_settings, save_settings, to_public
 from backend.integrations.chat import complete_chat
@@ -401,6 +403,24 @@ def background_music_list(q: str = "", page: int = Query(1, ge=1), page_size: in
 @app.post("/api/background-music", status_code=201)
 def background_music_create(value: BackgroundMusicCreate):
     return create_music(db, value)
+
+
+@app.put("/api/background-music/{music_id}/default")
+def background_music_default(music_id: str, value: MusicDefaultRequest):
+    return set_default_music(db, music_id, value.is_default)
+
+
+@app.get("/api/subtitle-fonts")
+def available_subtitle_fonts():
+    return {"items": subtitle_fonts()}
+
+
+@app.post("/api/subtitle-preview")
+def subtitle_preview(value: SubtitlePreview):
+    try:
+        return Response(render_preview(value), media_type="image/png", headers={"Cache-Control": "no-store"})
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @app.put("/api/background-music/{music_id}")

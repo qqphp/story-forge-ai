@@ -46,14 +46,23 @@ const jenny = normalizeVoiceItem({
   personalities: ["Friendly"],
   sample_rate_hertz: "48000",
 });
-const voices = [xiaoxiao, yunxi, jenny];
+const hamedDragonLatest = normalizeVoiceItem({
+  short_name: "ar-SA-Hamed:DragonLatestNeural",
+  locale: "ar-SA",
+  local_name: "Hamed Dragon Latest",
+  gender: "Male",
+  voice_type: "Neural",
+  secondary_locales: ["en-US", "zh-CN", "zh-TW"],
+});
+const voices = [xiaoxiao, yunxi, jenny, hamedDragonLatest];
 
 test("voice filters combine language, region, gender, style and translated search", () => {
   assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, language: "zh", gender: "Female" }).map(voice => voice.short_name), ["zh-CN-XiaoxiaoNeural"]);
   assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, style: "newscast" }).map(voice => voice.short_name), ["zh-CN-XiaoxiaoNeural"]);
   assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, query: "女声 新闻" }).map(voice => voice.short_name), ["zh-CN-XiaoxiaoNeural"]);
-  assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, language: "en" }).map(voice => voice.short_name), ["zh-CN-XiaoxiaoNeural", "en-US-JennyNeural"]);
-  assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, locale: "en-US" }).map(voice => voice.short_name), ["zh-CN-XiaoxiaoNeural", "en-US-JennyNeural"]);
+  assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, language: "en" }).map(voice => voice.short_name), ["en-US-JennyNeural"]);
+  assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, locale: "en-US" }).map(voice => voice.short_name), ["en-US-JennyNeural"]);
+  assert.deepEqual(filterVoices(voices, { ...emptyVoiceFilters, language: "zh", locale: "zh-TW" }), []);
 });
 
 test("locale labels keep Chinese dialects distinct", () => {
