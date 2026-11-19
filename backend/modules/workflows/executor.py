@@ -145,10 +145,18 @@ async def execute_workflow(
             return
         save(wid, status="completed", step=8, progress=100, payload_update={"videos": videos})
     except Exception as exc:
-        save(wid, status="failed", payload_update={"error": str(exc)[:500]})
+        save(wid, status="failed", payload_update={"error": workflow_failure_message(exc)})
     finally:
         if is_deleting(wid):
             cleanup_deleted(wid)
+
+
+def workflow_failure_message(exc: BaseException) -> str:
+    """Describe a failed workflow, including timeouts whose text is blank."""
+    text = str(exc).strip()
+    if "timeout" in type(exc).__name__.lower() or text.lower() == "timed out":
+        return "文稿生成超时，模型在限定时间内没有返回"
+    return (text or f"制作失败：{type(exc).__name__}")[:500]
 
 
 def _media_name(url: str) -> str:

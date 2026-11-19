@@ -133,6 +133,12 @@ test("workflow details expose generated tags, topics and subtitles as an eight-s
   assert.match(page, /下载 SRT/);
   assert.match(page, /下载 TXT/);
   assert.match(page, /下载 JSON/);
+  assert.match(page, /const pipelineStep=Math\.max\(0,task\.step-1\)/);
+  assert.match(page, /pipelineFailed\?"failed":"now"/);
+  assert.match(page, /制作失败，但没有记录到具体原因。/);
+  assert.match(backend, /文稿生成超时，模型在限定时间内没有返回/);
+  assert.match(backend, /client_factory\(timeout=300\) as client/);
+  assert.match(css, /\.steps>span\.failed\{color:#97453f\}/);
   assert.match(css, /grid-template-columns:repeat\(8,1fr\)/);
   assert.match(css, /\.taxonomy-panel/);
   assert.match(css, /\.subtitle-downloads/);

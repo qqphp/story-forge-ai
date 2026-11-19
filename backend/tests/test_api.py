@@ -489,6 +489,11 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertIn("&H80000000", ass)
         self.assertTrue((output_dir / "draft-1-voice-1.srt").is_file())
 
+    def test_blank_timeout_becomes_a_visible_workflow_error(self):
+        self.assertEqual(executor.workflow_failure_message(TimeoutError("")), "文稿生成超时，模型在限定时间内没有返回")
+        self.assertEqual(executor.workflow_failure_message(RuntimeError("封面生成失败")), "封面生成失败")
+        self.assertEqual(executor.workflow_failure_message(RuntimeError("   ")), "制作失败：RuntimeError")
+
     def test_original_draft_request_uses_selected_prompt_and_book_identity_only(self):
         writing = self.client.post("/api/prompts", json={
             "kind": "writing", "name": "口播结构", "text": "用第一人称讲一个具体场景，控制在四百字内。",

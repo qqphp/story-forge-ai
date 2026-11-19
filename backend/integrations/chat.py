@@ -13,7 +13,7 @@ async def complete_chat(
     url = settings["text_api_base"].rstrip("/") + "/chat/completions"
     payload = {"model": settings["model"], "messages": messages, "temperature": 0.75}
     log_request(request_type, url, payload)
-    async with client_factory(timeout=90) as client:
+    async with client_factory(timeout=300) as client:
         response = await client.post(url, headers={"Authorization": f"Bearer {settings['text_api_key']}", "Content-Type": "application/json"}, json=payload)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
