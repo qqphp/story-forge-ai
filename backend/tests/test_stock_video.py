@@ -101,8 +101,8 @@ class StockVideoTests(unittest.TestCase):
         self.assertIn("scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,format=yuv420p", local)
         self.assertEqual(local[local.index("-preset") + 1], "ultrafast")
         self.assertEqual(video_encode_timeout(None), 600)
-        self.assertEqual(video_encode_timeout(484), 1088)
-        self.assertEqual(video_encode_timeout(10), 180)
+        self.assertEqual(video_encode_timeout(484), 3084)
+        self.assertEqual(video_encode_timeout(10), 240)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             clips = [root / f"clip-{index}.mp4" for index in range(3)]

@@ -75,6 +75,7 @@ async def generate_cover(
                     return True, f"{generated.width}×{generated.height}"
         except Exception:
             pass
-    fallback(path, title, author, index)
+    from backend.integrations.local_covers import render_local_cover
+    render_local_cover(path, title, author, image_ratio if image_ratio in ("1:1", "16:9", "9:16") else "9:16", index % 6)
     with Image.open(path) as generated:
         return False, f"{generated.width}×{generated.height}"

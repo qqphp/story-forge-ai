@@ -7,6 +7,7 @@ from pathlib import Path
 from backend.integrations.fonts import bundled_fonts_dir, load_font_manifest, subtitle_font_family
 from backend.integrations.subtitle_burn import WHITE, TRANSLUCENT_DARK, render_burn_ass, subtitle_line_capacity, text_units
 from backend.integrations.video import video_command
+from backend.integrations.subtitles import clean_caption
 
 
 def _font_family(path: Path) -> str:
@@ -50,9 +51,9 @@ class SubtitleBurnTests(unittest.TestCase):
         ass = render_burn_ass(srt, 1080, 1920, "Noto Sans CJK SC")
         self.assertIn("PlayResX: 1080", ass)
         self.assertIn("PlayResY: 1920", ass)
-        self.assertIn(f"Noto Sans CJK SC,52,{WHITE}", ass)
-        self.assertIn(f"{TRANSLUCENT_DARK},0,0,0,0,100,100,0,0,4,", ass)
-        self.assertIn("Dialogue: 0,0:00:00.00,0:00:01.20,Default,,0,0,0,,你好，字幕。", ass)
+        self.assertIn(f"Source Han Serif SC,52,{WHITE}", ass)
+        self.assertIn("&HFF000000,0,0,0,0,100,100,0,0,1,", ass)
+        self.assertIn("Dialogue: 0,0:00:00.00,0:00:01.20,Default,,0,0,0,,{\\pos(540,1300)}你好字幕", ass)
         self.assertIn(r"第一行\N第二行", ass)
 
     def test_portrait_caption_wraps_inside_the_frame_and_continues_on_the_next_cue(self):
@@ -68,7 +69,7 @@ class SubtitleBurnTests(unittest.TestCase):
             match = re.match(r"Dialogue: 0,([^,]+),([^,]+),Default,,0,0,0,,(.*)", line)
             self.assertIsNotNone(match)
             assert match is not None
-            start_text, end_text, text = match.group(1), match.group(2), match.group(3)
+            start_text, end_text, text = match.group(1), match.group(2), re.sub(r"\{[^}]*\}", "", match.group(3))
             self.assertLessEqual(previous_end, start_text)
             self.assertLessEqual(start_text, end_text)
             self.assertLessEqual(end_text, "0:00:06.00")
@@ -79,8 +80,8 @@ class SubtitleBurnTests(unittest.TestCase):
                 self.assertLessEqual(text_units(visual), capacity * 1.08)
                 self.assertNotIn(sentence, visual)
             seen += "".join(visual_lines)
-        self.assertEqual(seen, sentence)
-        self.assertEqual(dialogues[0].split(",,", 1)[-1].split(r"\N")[0][-1], "，")
+        self.assertEqual(seen, clean_caption(sentence))
+        self.assertNotIn("，", seen)
 
     def test_ffmpeg_command_burns_the_matching_srt(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -101,9 +102,9 @@ class SubtitleBurnTests(unittest.TestCase):
             self.assertIn("fontsdir=", video_filter)
             self.assertIn(r"\\:", video_filter)
             ass = output.with_suffix(".ass").read_text(encoding="utf-8")
-            self.assertIn(r"\{保留\}\\符号", ass)
+            self.assertIn("保留符号", ass)
             self.assertIn(WHITE, ass)
-            self.assertIn(TRANSLUCENT_DARK, ass)
+            self.assertIn("&HFF000000", ass)
 
     def test_command_without_subtitles_keeps_the_plain_picture_filter(self):
         command = video_command("ffmpeg", Path("cover.png"), Path("audio.mp3"), Path("out.mp4"))
@@ -121,7 +122,7 @@ class SubtitleBurnTests(unittest.TestCase):
         manifest = load_font_manifest()
         roles = {item["role"]: item for item in manifest["fonts"]}
         self.assertEqual(subtitle_font_family(), roles["中文主字体"]["family"])
-        self.assertEqual([item["role"] for item in manifest["fonts"]], [
+        self.assertEqual([item["role"] for item in manifest["fonts"][:6]], [
             "中文主字体", "中文宋体", "中文楷体", "英文主字体", "特殊符号", "彩色表情",
         ])
         fonts = bundled_fonts_dir()

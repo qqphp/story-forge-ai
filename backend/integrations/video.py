@@ -52,7 +52,7 @@ def video_encode_timeout(duration: float | None) -> int:
     """Give a narration enough time to encode, including subtitle burn on a busy machine."""
     if duration is None or duration <= 0:
         return 600
-    return min(3600, max(180, int(duration * 2 + 120)))
+    return min(3600, max(180, int(duration * 6 + 180)))
 
 
 def video_command(

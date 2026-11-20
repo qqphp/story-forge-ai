@@ -39,6 +39,39 @@ class StoryForgeApiTests(unittest.TestCase):
         main.REGENERATING_VIDEOS.clear()
         self.db_patch.stop(); self.media_patch.stop(); self.voice_samples_patch.stop(); self.voice_translations_patch.stop(); self.temp.cleanup()
 
+    def test_background_overlay_settings_round_trip_and_preview_validation(self):
+        settings = self.client.get("/api/settings").json()
+        self.assertTrue(settings["background_overlay_enabled"])
+        self.assertEqual(settings["background_overlay_opacity"], .25)
+        for enabled, opacity in ((False, .63), (True, 0), (True, .25), (True, 1)):
+            response = self.client.put("/api/settings", json={**settings, "background_overlay_enabled": enabled, "background_overlay_opacity": opacity})
+            self.assertEqual(response.status_code, 200)
+            saved = self.client.get("/api/settings").json()
+            self.assertEqual(saved["background_overlay_enabled"], enabled)
+            self.assertEqual(saved["background_overlay_opacity"], opacity)
+        for opacity in (-.01, 1.01):
+            self.assertEqual(self.client.put("/api/settings", json={**settings, "background_overlay_opacity": opacity}).status_code, 422)
+            self.assertEqual(self.client.post("/api/subtitle-preview", json={"background_overlay_opacity": opacity}).status_code, 422)
+
+    def test_record_label_upload_is_staged_until_settings_save(self):
+        from backend.integrations import record_labels
+        raw = io.BytesIO()
+        Image.new("RGBA", (20,20), (10,20,30,120)).save(raw,"PNG")
+        before = self.client.get("/api/settings").json()
+        with patch.object(record_labels,"UPLOADS",Path(self.temp.name)/"labels"):
+            response=self.client.post("/api/video/record-label-images",content=raw.getvalue(),headers={"Content-Type":"image/png"})
+            self.assertEqual(response.status_code,201)
+            image_id=response.json()["id"]
+            self.assertEqual(self.client.get("/api/settings").json()["record_label_image_id"],before["record_label_image_id"])
+            saved=self.client.put("/api/settings",json={**before,"record_label_image_id":image_id})
+            self.assertEqual(saved.json()["record_label_image_id"],image_id)
+            self.assertEqual(self.client.get(response.json()["url"]).status_code,200)
+            self.assertEqual(self.client.post("/api/video/record-label-images",content=b"bad").status_code,422)
+            self.assertEqual(self.client.get("/api/settings").json()["record_label_image_id"],image_id)
+            self.assertEqual(self.client.get("/api/video/record-label-images/invalid").status_code,404)
+            self.client.put("/api/settings",json={**before,"record_label_image_id":None})
+            self.assertIsNone(self.client.get("/api/settings").json()["record_label_image_id"])
+
     def test_health_and_empty_workflows(self):
         self.assertTrue(self.client.get("/api/health").json()["ok"])
         self.assertEqual(self.client.get("/api/workflows").json(), [])
@@ -68,7 +101,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(response.json()["pexels_api_key"], "••••••••")
         self.assertEqual(response.json()["pixabay_api_key"], "••••••••")
         self.assertEqual(response.json()["video_orientation"], "portrait")
-        self.assertEqual(response.json()["burn_subtitles"], False)
+        self.assertEqual(response.json()["burn_subtitles"], True)
         self.assertEqual(response.json()["speech_rate"], 0)
         enabled = self.client.put("/api/settings", json={**payload, "burn_subtitles": True})
         self.assertEqual(enabled.status_code, 200)
@@ -251,7 +284,7 @@ class StoryForgeApiTests(unittest.TestCase):
     def test_new_cover_templates_default_to_video_cover_ratios(self):
         cover = self.client.post("/api/prompts", json={"kind": "cover", "name": "默认比例", "text": "无文字、文学感"})
         self.assertEqual(cover.status_code, 201)
-        self.assertEqual(cover.json()["image_sizes"], ["16:9", "9:16"])
+        self.assertEqual(cover.json()["image_sizes"], ["1:1", "16:9", "9:16"])
 
     def test_cover_template_requires_both_video_cover_ratios(self):
         created = self.client.post("/api/prompts", json={"kind": "cover", "name": "缺少竖版", "text": "无文字、文学感", "image_sizes": ["16:9"]})
@@ -297,8 +330,8 @@ class StoryForgeApiTests(unittest.TestCase):
                 **main.DEFAULT_SETTINGS, "text_api_key": "text-test-key",
             }))
         self.assertFalse(generated)
-        self.assertEqual(resolution, "73×41")
-        local.assert_called_once()
+        self.assertEqual(resolution, "1920×1080")
+        local.assert_not_called()
         client.assert_not_called()
 
     def test_unselected_models_do_not_send_remote_generation_requests(self):
@@ -440,7 +473,7 @@ class StoryForgeApiTests(unittest.TestCase):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["status"], "completed")
-        self.assertEqual(workflow["covers"][0]["image_ratio"], "16:9")
+        self.assertEqual(workflow["covers"][0]["image_ratio"], "1:1")
 
     def test_workflow_burns_the_matching_srt_when_enabled(self):
         self.client.put("/api/settings", json={**main.DEFAULT_SETTINGS, "burn_subtitles": True, "video_orientation": "portrait"})
@@ -482,16 +515,16 @@ class StoryForgeApiTests(unittest.TestCase):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
         self.assertEqual(workflow["status"], "completed", workflow.get("error"))
-        encodes = [command for command in captured if "-vf" in command]
+        encodes = [command for command in captured if "-filter_complex" in command]
         self.assertEqual(len(encodes), len(workflow["videos"]))
-        video_filter = encodes[0][encodes[0].index("-vf") + 1]
+        video_filter = encodes[0][encodes[0].index("-filter_complex") + 1]
         self.assertIn("ass=", video_filter)
         self.assertIn("fontsdir=", video_filter)
         output_dir = main.MEDIA / workflow["output_dir"]
-        ass = (output_dir / "video-1.ass").read_text(encoding="utf-8")
+        ass = (output_dir / Path(workflow["videos"][0]["url"]).name).with_suffix(".ass").read_text(encoding="utf-8")
         self.assertIn("简短内容", ass)
         self.assertIn("&H00FFFFFF", ass)
-        self.assertIn("&H80000000", ass)
+        self.assertIn("&HFF000000", ass)
         self.assertTrue((output_dir / "draft-1-voice-1.srt").is_file())
 
     def test_blank_timeout_becomes_a_visible_workflow_error(self):
@@ -806,14 +839,14 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(after["status"], "completed", after.get("video_error"))
         self.assertFalse(after["video_regenerating"])
         self.assertEqual(after["video_error"], "")
-        for key in ("description", "original_drafts", "polished_drafts", "audio", "covers", "subtitles", "tags", "topics"):
+        for key in ("description", "original_drafts", "polished_drafts", "audio", "covers", "tags", "topics"):
             self.assertEqual(after[key], before[key])
         self.assertEqual((output_dir / "draft-1-voice-1.mp3").read_bytes(), preserved["audio"])
         self.assertEqual((output_dir / "draft-1-voice-1.srt").read_bytes(), preserved["srt"])
         self.assertEqual((output_dir / "cover-1.png").read_bytes(), preserved["cover"])
         self.assertFalse((output_dir / "video-1.mp4").exists())
         command = " ".join(str(part) for part in captured[0])
-        self.assertIn("cover-1.png", command)
+        self.assertIn(".layer.png", command)
         self.assertNotIn("cover-2.png", command)
         self.assertIn("scale=1920:1080", command)
         self.assertIn(".ass", command)
@@ -826,6 +859,26 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertIn("PlayResX: 1920", ass)
         self.assertIn("PlayResY: 1080", ass)
         self.assertNotIn(before["id"], main.REGENERATING_VIDEOS)
+
+    def test_second_orientation_failure_keeps_all_previous_assets(self):
+        before = self._completed_workflow("第二版失败")
+        main.save_workflow(before["id"], payload_update={"covers": [c for c in before["covers"] if c["image_ratio"] != "1:1"]})
+        before = self.client.get(f"/api/workflows/{before['id']}").json()
+        root = main.MEDIA / before["output_dir"]
+        previous = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+        count = 0
+        def encode(command, **kwargs):
+            nonlocal count
+            count += 1
+            Path(command[-1]).write_bytes(b"partial")
+            return type("Result", (), {"returncode": 1 if count == 2 else 0, "stderr": b"second encode failed"})()
+        with patch.object(executor.subprocess, "run", side_effect=encode):
+            self.assertEqual(self.client.post(f"/api/workflows/{before['id']}/regenerate-video").status_code, 202)
+        after = self.client.get(f"/api/workflows/{before['id']}").json()
+        self.assertEqual(after["videos"], before["videos"])
+        self.assertEqual(after["subtitles"], before["subtitles"])
+        self.assertTrue(after["video_error"])
+        self.assertEqual({p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}, previous)
 
     def test_failed_video_regeneration_keeps_the_previous_video(self):
         before = self._completed_workflow("合成失败保留")
@@ -856,8 +909,8 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(after["subtitles"], before["subtitles"])
         self.assertFalse(after["video_regenerating"])
         self.assertIn("保留原来的视频", after["video_error"])
-        self.assertEqual((output_dir / "video-1.mp4").read_bytes(), b"original-video")
-        self.assertEqual(list(output_dir.glob("video-1-*.mp4")), [])
+        self.assertEqual((output_dir / Path(before["videos"][0]["url"]).name).read_bytes(), b"original-video")
+        self.assertEqual({p.name for p in output_dir.glob("video-1-*.mp4")}, {Path(v["url"]).name for v in before["videos"]})
 
     def test_video_regeneration_rejects_unfinished_or_incomplete_works(self):
         with patch.object(main, "process_workflow"):
@@ -969,7 +1022,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(after["videos"][0]["source"], "pexels")
         self.assertEqual(after["videos"][0]["orientation"], "landscape")
         self.assertNotEqual(after["videos"][0]["url"], before["videos"][0]["url"])
-        for key in ("description", "polished_drafts", "audio", "covers", "subtitles"):
+        for key in ("description", "polished_drafts", "audio", "covers"):
             self.assertEqual(after[key], before[key])
         speech.assert_not_called(); cover.assert_not_called(); subtitles.assert_not_called()
 
@@ -1038,7 +1091,7 @@ class StoryForgeApiTests(unittest.TestCase):
         after = self.client.get(f"/api/workflows/{before['id']}").json()
         self.assertEqual(after.get("video_error"), "", captured)
         self.assertEqual(after["audio"], regenerated["audio"])
-        self.assertEqual(after["subtitles"], regenerated["subtitles"])
+        self.assertEqual(after["subtitles"][0]["voice"], regenerated["subtitles"][0]["voice"])
         command = captured[0]
         narration = next(part for part in command if part.endswith(".mp3"))
         self.assertEqual(Path(narration).name, new_audio.name)

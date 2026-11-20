@@ -29,10 +29,10 @@ class SubtitleFormatTests(unittest.TestCase):
             {"start": 1.2, "end": 2.5, "text": "第二句。"},
             {"start": 2.5, "end": 3, "text": "   "},
         ]
-        self.assertEqual(render_srt(cues), "1\n00:00:00,000 --> 00:00:01,200\n你好，这是第一句。\n\n2\n00:00:01,200 --> 00:00:02,500\n第二句。\n")
-        self.assertEqual(render_txt(cues), "你好，这是第一句。\n第二句。\n")
+        self.assertEqual(render_srt(cues), "1\n00:00:00,000 --> 00:00:01,200\n你好这是第一句\n\n2\n00:00:01,200 --> 00:00:02,500\n第二句\n")
+        self.assertEqual(render_txt(cues), "你好这是第一句\n第二句\n")
         payload = json.loads(render_json(cues))
-        self.assertEqual(payload["text"], "你好，这是第一句。第二句。")
+        self.assertEqual(payload["text"], "你好这是第一句第二句")
         self.assertEqual(payload["segments"][0]["words"][0]["word"], "你好")
         self.assertEqual([segment["id"] for segment in payload["segments"]], [1, 2])
 
@@ -78,7 +78,7 @@ def load_model(name):
     def test_worker_writes_unicode_subtitles_without_using_parent_model(self):
         with patch.object(subtitles, "_load_model", side_effect=AssertionError("model loaded in API process")):
             paths = subtitles.generate_subtitles(self.audio, "你好，世界。", "zh")
-        self.assertEqual(paths["txt"].read_text(encoding="utf-8"), "你好，世界。\n")
+        self.assertEqual(paths["txt"].read_text(encoding="utf-8"), "你好世界\n")
 
     def test_hung_alignment_is_terminated(self):
         with patch.dict(os.environ, {"TEST_ALIGN_DELAY": "20"}), patch.object(subtitles, "SUBTITLE_TIMEOUT", 0.3):

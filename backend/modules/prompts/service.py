@@ -14,8 +14,8 @@ from backend.modules.serializers import prompt_template_row
 
 
 def _require_video_cover_sizes(kind: str, image_sizes: list[str]) -> None:
-    if kind == "cover" and not {"16:9", "9:16"}.issubset(image_sizes):
-        raise HTTPException(400, "封面提示词必须同时选择 16:9 和 9:16 图片尺寸")
+    if kind == "cover" and not {"1:1", "16:9", "9:16"}.issubset(image_sizes):
+        raise HTTPException(400, "封面提示词必须同时选择 1:1、16:9 和 9:16 图片尺寸")
 
 
 def list_templates(db: Callable[[], AbstractContextManager[Any]], kind: str | None = None) -> list[dict[str, Any]]:

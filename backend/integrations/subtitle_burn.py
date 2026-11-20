@@ -158,18 +158,20 @@ def _ass_color(color: str, opacity: float = 1) -> str:
 
 
 def subtitle_fonts() -> list[dict[str, str]]:
-    allowed = SubtitleStyle.model_fields["font_id"].annotation.__args__
-    return [{"id": f["id"], "name": f["role"], "family": f["family"]} for f in load_font_manifest()["fonts"] if f["id"] in allowed]
+    return [{"id": f["id"], "name": f["role"], "family": f["family"], "category": f.get("category", "正文"), "license": f["license"], "source": f["source"]} for f in load_font_manifest()["fonts"] if f.get("selectable", f["id"] not in ("noto-color-emoji", "noto-sans-symbols-2"))]
 
 
 def render_burn_ass(srt_text: str, width: int, height: int, font_name: str, style: dict | None = None) -> str:
-    cues = parse_srt(srt_text)
+    from backend.integrations.subtitles import normalize_cues
+    cues = normalize_cues(parse_srt(srt_text))
     if not cues:
         raise RuntimeError("字幕文件没有可烧录的内容")
     font_size, margin_v, padding = subtitle_layout(width, height)
     margin_h, alignment, bold = _SIDE_MARGIN, 2, 0
     foreground, outline, back = WHITE, "&H00000000", TRANSLUCENT_DARK
     border_style = 4
+    if style is None:
+        style = SubtitleStyle().model_dump()
     if style is not None:
         options = SubtitleStyle.model_validate(style)
         scale = min(width, height) / 1080
@@ -187,7 +189,16 @@ def render_burn_ass(srt_text: str, width: int, height: int, font_name: str, styl
         padding = max(8, round(font_size * .22)) if options.mode == "box" else round(options.outline_width * scale)
     # libass wraps on spaces. A Chinese cue has none, so it stays one line and runs past the frame.
     capacity = max(6.0, (width - margin_h * 2 - padding * 2) / font_size * .92)
+    from backend.integrations.player import layout
+    x, y, area_width, area_height = layout(width, height)["caption"]
+    capacity = max(4, (area_width - margin_h * 2) / font_size * .92)
     fitted = layout_subtitle_cues(cues, capacity)
+    anchor_x = x + area_width / 2
+    anchor_y = y + area_height / 2
+    if alignment == 8:
+        anchor_y = y + min(margin_v, area_height / 3)
+    elif alignment == 2:
+        anchor_y = y + area_height - min(margin_v, area_height / 3)
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -204,7 +215,7 @@ def render_burn_ass(srt_text: str, width: int, height: int, font_name: str, styl
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for cue in fitted:
-        lines.append(f"Dialogue: 0,{ass_time(float(cue['start']))},{ass_time(float(cue['end']))},Default,,0,0,0,,{escape_ass(str(cue['text']))}")
+        lines.append(f"Dialogue: 0,{ass_time(float(cue['start']))},{ass_time(float(cue['end']))},Default,,0,0,0,,{{\\pos({anchor_x:g},{anchor_y:g})}}{escape_ass(str(cue['text']))}")
     return "\n".join(lines) + "\n"
 
 

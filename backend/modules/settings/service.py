@@ -22,6 +22,13 @@ def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[
     with db() as conn:
         row = conn.execute("SELECT payload FROM settings WHERE id=1").fetchone()
     stored = json.loads(row["payload"]) if row else {}
+    if not stored.get("_player_template_version"):
+        stored.update(subtitle_style=SubtitleStyle().model_dump(), burn_subtitles=True, _player_template_version=1)
+        with db() as conn:
+            conn.execute("INSERT INTO settings(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", (json.dumps(stored, ensure_ascii=False),))
+    stored.setdefault("background_overlay_enabled", True)
+    stored.setdefault("background_overlay_opacity", 0.25)
+    stored.setdefault("record_label_image_id", "initial")
     legacy_speech_region = stored.pop("azure_speech_region", None)
     for provider in ("text", "image"):
         for legacy_field in ("api_base", "api_key"):
@@ -51,7 +58,7 @@ def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[
 
 
 def to_public(settings: dict[str, Any]) -> dict[str, Any]:
-    result = dict(settings)
+    result = {key: value for key, value in settings.items() if not key.startswith("_")}
     result["text_api_key"] = "••••••••" if result.get("text_api_key") else ""
     result["image_api_key"] = "••••••••" if result.get("image_api_key") else ""
     result["azure_speech_key"] = "••••••••" if result.get("azure_speech_key") else ""
@@ -62,6 +69,12 @@ def to_public(settings: dict[str, Any]) -> dict[str, Any]:
 
 def save_settings(db: Callable[[], AbstractContextManager[Any]], current: dict[str, Any], value: SettingsPayload) -> dict[str, Any]:
     incoming = value.model_dump()
+    incoming["_player_template_version"] = 1
+    for key, default in (("background_overlay_enabled", True), ("background_overlay_opacity", 0.25)):
+        if key not in value.model_fields_set:
+            incoming[key] = current.get(key, default)
+    if "record_label_image_id" not in value.model_fields_set:
+        incoming["record_label_image_id"] = current.get("record_label_image_id", "initial")
     if "subtitle_style" not in value.model_fields_set:
         incoming["subtitle_style"] = current.get("subtitle_style", SubtitleStyle().model_dump())
     for key in ("text_api_key", "image_api_key", "azure_speech_key", "pexels_api_key", "pixabay_api_key"):

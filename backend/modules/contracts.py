@@ -54,7 +54,7 @@ class BatchWorkflowCreate(WorkflowOptions):
 
 
 MAX_PROMPT_LENGTH = 100_000
-DEFAULT_IMAGE_SIZES = ["16:9", "9:16"]
+DEFAULT_IMAGE_SIZES = ["1:1", "16:9", "9:16"]
 IMAGE_SIZES = {"1:1", "4:5", "2:3", "3:4", "9:16", "6:7", "1.91:1", "2.35:1", "3:2", "4:3", "16:9"}
 
 
@@ -100,21 +100,32 @@ class ModelListRequest(BaseModel):
 
 
 class SubtitleStyle(BaseModel):
-    font_id: Literal["noto-sans-cjk-sc", "source-han-serif", "lxgw-wenkai", "inter"] = "noto-sans-cjk-sc"
+    font_id: str = "source-han-serif"
+    @field_validator("font_id")
+    @classmethod
+    def validate_font(cls, value: str) -> str:
+        from backend.integrations.fonts import load_font_manifest
+        if value not in {f["id"] for f in load_font_manifest()["fonts"] if f.get("selectable", f["id"] not in ("noto-color-emoji", "noto-sans-symbols-2"))}:
+            raise ValueError("未知字幕字体")
+        return value
+
     font_size: int = Field(default=52, ge=24, le=96)
     text_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9a-fA-F]{6}$")
     bold: bool = False
-    mode: Literal["box", "outline"] = "box"
+    mode: Literal["box", "outline"] = "outline"
     background_color: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
-    background_opacity: float = Field(default=.5, ge=0, le=1)
+    background_opacity: float = Field(default=0, ge=0, le=1)
     outline_color: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
     outline_width: int = Field(default=2, ge=0, le=8)
-    position: Literal["top", "center", "bottom"] = "bottom"
+    position: Literal["top", "center", "bottom"] = "center"
     margin_horizontal: int = Field(default=48, ge=0, le=200)
     margin_vertical: int | None = Field(default=None, ge=0, le=300)
 
 
 class SubtitlePreview(BaseModel):
+    background_overlay_enabled: bool = True
+    background_overlay_opacity: float = Field(default=0.25, ge=0, le=1)
+    record_label_image_id: str | None = Field(default=None, pattern=r"^(initial|[a-f0-9]{32})$")
     orientation: Literal["landscape", "portrait"] = "portrait"
     style: SubtitleStyle = Field(default_factory=SubtitleStyle)
     text: str = Field(default="慢下来，读一本好书。\n在文字中遇见更大的世界。", min_length=1, max_length=200)
@@ -125,6 +136,9 @@ class MusicDefaultRequest(BaseModel):
 
 
 class SettingsPayload(BaseModel):
+    background_overlay_enabled: bool = True
+    background_overlay_opacity: float = Field(default=0.25, ge=0, le=1)
+    record_label_image_id: str | None = Field(default=None, pattern=r"^(initial|[a-f0-9]{32})$")
     text_api_base: str = "https://api.teamorouter.com/v1"
     text_api_key: str = ""
     image_api_base: str = "https://api.teamorouter.com/v1"
@@ -137,7 +151,7 @@ class SettingsPayload(BaseModel):
     voices: list[str] = ["zh-CN-XiaoxiaoNeural"]
     speech_rate: int = Field(default=0, ge=-50, le=100)
     video_orientation: str = Field(default="portrait", pattern="^(landscape|portrait)$")
-    burn_subtitles: bool = False
+    burn_subtitles: bool = True
     subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
     video_generation_method: str = Field(default="local", pattern="^(local|stock)$")
     stock_video_provider: str = Field(default="pexels", pattern="^(pexels|pixabay)$")

@@ -7,6 +7,8 @@ export type PromptTemplate = {
 };
 
 export type Asset = {
+  prompt_id?: string | null;
+  orientation?: "landscape" | "portrait";
   template_id?: string;
   url: string;
   voice?: string;
@@ -39,14 +41,14 @@ export type VoiceItem = {
 };
 export type BackgroundMusic = { id: string; name: string; url: string; category: string; created_at: number; is_default: boolean };
 export type SubtitleStyle = {
-  font_id: "noto-sans-cjk-sc" | "source-han-serif" | "lxgw-wenkai" | "inter";
+  font_id: string;
   font_size: number; text_color: string; bold: boolean; mode: "box" | "outline";
   background_color: string; background_opacity: number; outline_color: string; outline_width: number;
   position: "top" | "center" | "bottom"; margin_horizontal: number; margin_vertical: number | null;
 };
 export type RequestLog = { id: number; request_type: string; request_url: string; request_params: Record<string, unknown>; created_at: number };
 export type WorkspacePage = "workspace" | "prompts" | "models" | "voice" | "video" | "logs";
-export type AppSettings = { text_api_base: string; text_api_key: string; image_api_base: string; image_api_key: string; model: string; image_model: string; azure_speech_key: string; azure_speech_base: string; voice_format: string; voices: string[]; speech_rate: number; video_orientation: "landscape" | "portrait"; burn_subtitles: boolean; subtitle_style: SubtitleStyle; video_generation_method: "local" | "stock"; stock_video_provider: "pexels" | "pixabay"; pexels_api_base: string; pexels_api_key: string; pixabay_api_base: string; pixabay_api_key: string };
+export type AppSettings = { background_overlay_enabled: boolean; background_overlay_opacity: number; record_label_image_id?: string | null; text_api_base: string; text_api_key: string; image_api_base: string; image_api_key: string; model: string; image_model: string; azure_speech_key: string; azure_speech_base: string; voice_format: string; voices: string[]; speech_rate: number; video_orientation: "landscape" | "portrait"; burn_subtitles: boolean; subtitle_style: SubtitleStyle; video_generation_method: "local" | "stock"; stock_video_provider: "pexels" | "pixabay"; pexels_api_base: string; pexels_api_key: string; pixabay_api_base: string; pixabay_api_key: string };
 export type Workflow = {
   local_cover?: boolean;
   id: string; book_title: string; author: string; edition: string; status: string;

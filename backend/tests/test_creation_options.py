@@ -92,7 +92,7 @@ class CreationOptionsTests(unittest.TestCase):
         self.client.delete(f"/api/background-music/{music['id']}")
         self.assertEqual(self.client.get(f"/api/workflows/{chosen['id']}").json()["background_music"]["name"], "默认音乐")
 
-    def test_local_workflow_never_calls_image_model_and_generates_only_two_covers(self):
+    def test_local_workflow_never_calls_image_model_and_generates_three_covers(self):
         task = self.create(local_cover=True)
 
         async def speech(_text, _voice, _rate, _settings, path, *_args):
@@ -111,9 +111,9 @@ class CreationOptionsTests(unittest.TestCase):
         external.assert_not_called()
         result = self.client.get(f"/api/workflows/{task['id']}").json()
         self.assertEqual(result["status"], "completed", result.get("error"))
-        self.assertEqual(len(result["covers"]), 2)
+        self.assertEqual(len(result["covers"]), 3)
         for asset in result["covers"]:
-            self.assertIn(asset["template_id"], [f"{s[0]}-{suffix}" for s in STYLES for suffix in ("portrait", "landscape")])
+            self.assertIn(asset["template_id"], [f"{s[0]}-{suffix}" for s in STYLES for suffix in ("square", "portrait", "landscape")])
             with Image.open(main.MEDIA / result["output_dir"] / Path(asset["url"]).name) as image:
                 self.assertEqual(image.size, SIZES[asset["image_ratio"]])
         self.assertEqual(self.client.get("/api/request-logs?request_type=封面生成").json()["total"], 0)
@@ -167,7 +167,7 @@ class CreationOptionsTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/settings").json()["subtitle_style"], style)
         self.assertEqual(self.client.post("/api/subtitle-preview", json={"style": {"font_id": "../../bad"}}).status_code, 422)
         self.assertEqual(self.client.post("/api/subtitle-preview", json={"text": "字" * 201}).status_code, 422)
-        self.assertEqual(len(self.client.get("/api/subtitle-fonts").json()["items"]), 4)
+        self.assertEqual(len(self.client.get("/api/subtitle-fonts").json()["items"]), 16)
 
 
 class VisualGenerationTests(unittest.TestCase):

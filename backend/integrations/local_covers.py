@@ -1,4 +1,4 @@
-"""Twelve code-drawn cover layouts, using only bundled fonts and Pillow."""
+"""Eighteen code-drawn cover layouts, using only bundled fonts and Pillow."""
 
 import random
 from pathlib import Path
@@ -16,7 +16,7 @@ STYLES = (
     ("landscape", "山水剪影", "#DCE3DA", "#263F3A", "#76958A"),
     ("editorial", "现代书刊", "#F5F0E8", "#222F43", "#B9503E"),
 )
-SIZES = {"16:9": (1920, 1080), "9:16": (1080, 1920)}
+SIZES = {"1:1": (1080, 1080), "16:9": (1920, 1080), "9:16": (1080, 1920)}
 
 
 def _fit(draw: ImageDraw.ImageDraw, text: str, font_file: Path, width: int, height: int, initial: int):
@@ -83,13 +83,14 @@ def render_local_cover(path: Path, title: str, author: str, ratio: str, style_in
         draw.multiline_text((x - box[0], height * .61 - box[1]), text, font=font, fill=ink, spacing=font.size // 4)
     draw.text((margin, height * .755), "STORYFORGE  /  BOOK NOTES", font=ImageFont.truetype(str(FONTS_DIR / "Inter-Regular.otf"), 22), fill=accent)
     image.save(path, "PNG")
-    return {"template_id": f"{key}-{'portrait' if portrait else 'landscape'}", "prompt_name": name, "image_ratio": ratio, "resolution": f"{width}×{height}", "provider": "local_template"}
+    return {"template_id": f"{key}-{'square' if width == height else 'portrait' if portrait else 'landscape'}", "prompt_name": name, "image_ratio": ratio, "resolution": f"{width}×{height}", "provider": "local_template"}
 
 
 def generate_local_covers(output_dir: Path, title: str, author: str) -> list[dict[str, str]]:
     covers = []
+    style_index = random.randrange(len(STYLES))
     for index, ratio in enumerate(SIZES, 1):
         path = output_dir / f"cover-{index}.png"
-        metadata = render_local_cover(path, title, author, ratio, random.randrange(len(STYLES)))
+        metadata = render_local_cover(path, title, author, ratio, style_index)
         covers.append({**metadata, "url": f"/media/{output_dir.name}/{path.name}"})
     return covers

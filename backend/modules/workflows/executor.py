@@ -1,6 +1,7 @@
 """Workflow execution orchestration, independent of the FastAPI entry point."""
 
 import asyncio
+import json
 import os
 import subprocess
 import time
@@ -132,13 +133,13 @@ async def execute_workflow(
             cover_prompts = [p for p in item.get("cover_prompts", []) if p.get("enabled")] or [{"text": "克制、文学感、适合短视频竖版", "enabled": True, "image_sizes": DEFAULT_IMAGE_SIZES}]
             covers, cover_index = [], 0
             for prompt in cover_prompts:
-                for image_ratio in prompt.get("image_sizes") or DEFAULT_IMAGE_SIZES:
+                for image_ratio in dict.fromkeys((prompt.get("image_sizes") or []) + DEFAULT_IMAGE_SIZES):
                     if is_deleting(wid): return
                     cover_index += 1
                     path = output_dir / f"cover-{cover_index}.png"
                     used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
                     if is_deleting(wid): return
-                    covers.append({"prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
+                    covers.append({"prompt_id": prompt.get("id"), "prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
         save(wid, step=8, progress=88, payload_update={"covers": covers})
 
         videos = await compose_videos(
@@ -149,7 +150,7 @@ async def execute_workflow(
         )
         if videos is None:
             return
-        save(wid, status="completed", step=8, progress=100, payload_update={"videos": videos})
+        save(wid, status="completed", step=8, progress=100, payload_update={"videos": videos, "subtitles": subtitle_items, "covers": covers})
     except Exception as exc:
         save(wid, status="failed", payload_update={"error": workflow_failure_message(exc)})
     finally:
@@ -181,15 +182,17 @@ def remove_replaced_videos(output_dir: Path, previous: list[dict[str, Any]], cur
         if path.parent != resolved_root:
             continue
         path.unlink(missing_ok=True)
-        path.with_suffix(".ass").unlink(missing_ok=True)
+        for sidecar in path.parent.glob(path.stem + ".*"):
+            sidecar.unlink(missing_ok=True)
 
 
 def discard_regeneration_files(output_dir: Path, stamp: int) -> None:
     if not output_dir.is_dir():
         return
-    for path in output_dir.glob(f"video-*-{stamp}.mp4"):
+    for path in output_dir.glob(f"video-*-{stamp}*.mp4"):
         path.unlink(missing_ok=True)
-        path.with_suffix(".ass").unlink(missing_ok=True)
+        for sidecar in path.parent.glob(path.stem + ".*"):
+            sidecar.unlink(missing_ok=True)
 
 
 _NARRATION_SUFFIXES = {".mp3", ".wav", ".ogg", ".opus", ".webm", ".pcm"}
@@ -265,13 +268,13 @@ async def compose_videos(
     subtitle_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Compose one video per narration from existing covers, audio, and optional subtitles."""
-    subtitle_items = subtitle_items or []
+    if subtitle_items is None:
+        subtitle_items = []
+    batch = str(time.time_ns())
     videos, ffmpeg = [], os.getenv("FFMPEG_PATH", "ffmpeg")
-    orientation = settings.get("video_orientation", "portrait")
-    required_ratio = "16:9" if orientation == "landscape" else "9:16"
-    matching_covers = [cover for cover in covers if cover.get("image_ratio") == required_ratio]
-    if not matching_covers:
-        raise RuntimeError(f"没有可用于{required_ratio}视频的封面，请检查封面提示词图片尺寸")
+    orientation = "landscape"
+    if not covers:
+        raise RuntimeError("缺少视频封面")
     background_music = item.get("background_music")
     stock_manifest = None
     if settings.get("video_generation_method", "local") == "stock":
@@ -292,46 +295,88 @@ async def compose_videos(
         )
         normalized_clips = await asyncio.to_thread(normalize_stock_videos, ffmpeg, clips, output_dir, orientation)
         stock_manifest = write_concat_manifest(output_dir / "stock-videos.ffconcat", normalized_clips)
-    for index, audio in enumerate(audio_items):
-        if is_deleting(wid):
-            return None
-        name = output_name(index) if output_name else f"video-{index + 1}.mp4"
-        if Path(name).name != name:
-            raise RuntimeError("视频文件名无效")
-        cover = output_dir / Path(matching_covers[index % len(matching_covers)]["url"]).name
-        narration = output_dir / _media_name(str(audio["url"]))
-        out = output_dir / name
-        subtitles = subtitle_file_for_audio(output_dir, audio, subtitle_items) if settings.get("burn_subtitles") else None
-        if subtitles is not None and not subtitles.is_file():
-            raise RuntimeError("找不到与配音对应的 SRT 字幕，无法烧录")
-        narration_duration = await asyncio.to_thread(probe_audio_duration, narration)
-        try:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                video_command(ffmpeg, cover, narration, out, orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles, subtitle_style=settings.get("subtitle_style")),
-                capture_output=True,
-                timeout=video_encode_timeout(narration_duration),
-            )
-        except subprocess.TimeoutExpired as exc:
-            waited = int(exc.timeout)
-            if narration_duration:
-                raise RuntimeError(f"视频合成超时：配音 {int(narration_duration)} 秒，编码等待超过 {waited} 秒") from exc
-            raise RuntimeError(f"视频合成超时：编码等待超过 {waited} 秒") from exc
-        if result.returncode != 0:
-            detail = result.stderr.decode("utf-8", errors="replace")[-1000:]
-            raise RuntimeError(f"视频合成失败，已保留原来的视频（如有）：{detail}")
-        if result.returncode == 0:
-            resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
-            videos.append({
-                "draft_id": audio["draft_id"], "voice": audio["voice"],
-                "url": f"/media/{item['output_dir']}/{out.name}",
-                "background_music": background_music.get("name") if background_music else "",
-                "orientation": orientation,
-                "source": settings.get("stock_video_provider") if stock_manifest else "local",
-                "resolution": resolution or ("1920 × 1080" if orientation == "landscape" else "1080 × 1920"),
-                "duration": duration,
-            })
-    return videos
+    created = []
+    completed = False
+    try:
+        from backend.integrations.local_covers import render_local_cover, STYLES
+        groups = {}
+        for cover_item in covers:
+            group_id = cover_item.get("prompt_id") or "local"
+            groups.setdefault(group_id, {})[cover_item.get("image_ratio")] = cover_item
+        for group_index, (group_id, group) in enumerate(groups.items()):
+            template = next(iter(group.values())).get("template_id", "literary")
+            style_index = next((i for i, style in enumerate(STYLES) if template.startswith(style[0])), 0)
+            for ratio in DEFAULT_IMAGE_SIZES:
+                if ratio not in group:
+                    path = output_dir / f"cover-generated-{batch}-{group_index}-{ratio.replace(':', '-')}.png"
+                    created.append(path.with_suffix(""))
+                    metadata = render_local_cover(path, item["book_title"], item.get("author", ""), ratio, style_index)
+                    asset = {**metadata, "prompt_id": None if group_id == "local" else group_id, "url": f"/media/{item['output_dir']}/{path.name}"}
+                    group[ratio] = asset
+                    covers.append(asset)
+        from backend.integrations.player import player_command
+        for index, audio in enumerate(audio_items):
+            from backend.integrations.subtitles import write_subtitle_files
+            from backend.integrations.subtitle_burn import parse_srt
+            original_srt = subtitle_file_for_audio(output_dir, audio, subtitle_items)
+            if original_srt.is_file():
+                json_path = original_srt.with_suffix(".json")
+                cues = json.loads(json_path.read_text(encoding="utf-8"))["segments"] if json_path.is_file() else parse_srt(original_srt.read_text(encoding="utf-8-sig"))
+                staged = output_dir / f"draft-subtitles-{index}-{batch}.wav"
+                created.append(staged.with_suffix(""))
+                paths = write_subtitle_files(staged, cues)
+                replacement = {"draft_id": audio["draft_id"], "voice": audio["voice"], **{f"{key}_url": f"/media/{item['output_dir']}/{path.name}" for key, path in paths.items()}}
+                subtitle_items[:] = [track for track in subtitle_items if not (track.get("draft_id") == audio["draft_id"] and track.get("voice") == audio["voice"])] + [replacement]
+            for orientation in ("landscape", "portrait"):
+                if is_deleting(wid):
+                    return None
+                name = output_name(index) if output_name else f"video-{index + 1}-{batch}.mp4"
+                name = name.replace(".mp4", f"-{orientation}.mp4")
+                if Path(name).name != name:
+                    raise RuntimeError("视频文件名无效")
+                group = list(groups.values())[index % len(groups)]
+                cover = output_dir / _media_name(group["1:1"]["url"])
+                background_cover = output_dir / _media_name(group["16:9" if orientation == "landscape" else "9:16"]["url"])
+                narration = output_dir / _media_name(str(audio["url"]))
+                out = output_dir / name
+                created.append(out.with_suffix(""))
+                subtitles = subtitle_file_for_audio(output_dir, audio, subtitle_items) if settings.get("burn_subtitles") else None
+                if subtitles is not None and not subtitles.is_file():
+                    raise RuntimeError("找不到与配音对应的 SRT 字幕，无法烧录")
+                narration_duration = await asyncio.to_thread(probe_audio_duration, narration)
+                try:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        player_command(ffmpeg, cover, narration, out, background_cover=background_cover, record_label_image_id=settings.get("record_label_image_id"), duration=narration_duration, background_overlay_enabled=settings.get("background_overlay_enabled", True), background_overlay_opacity=settings.get("background_overlay_opacity", .25), orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles, subtitle_style=settings.get("subtitle_style")),
+                        capture_output=True,
+                        timeout=video_encode_timeout(narration_duration),
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    waited = int(exc.timeout)
+                    if narration_duration:
+                        raise RuntimeError(f"视频合成超时：配音 {int(narration_duration)} 秒，编码等待超过 {waited} 秒") from exc
+                    raise RuntimeError(f"视频合成超时：编码等待超过 {waited} 秒") from exc
+                if result.returncode != 0:
+                    detail = result.stderr.decode("utf-8", errors="replace")[-1000:]
+                    raise RuntimeError(f"视频合成失败，已保留原来的视频（如有）：{detail}")
+                if result.returncode == 0:
+                    resolution, duration = await asyncio.to_thread(probe_video_metadata, out)
+                    videos.append({
+                        "draft_id": audio["draft_id"], "voice": audio["voice"],
+                        "url": f"/media/{item['output_dir']}/{out.name}",
+                        "background_music": background_music.get("name") if background_music else "",
+                        "orientation": orientation,
+                        "source": settings.get("stock_video_provider") if stock_manifest else "local",
+                        "resolution": resolution or ("1920 × 1080" if orientation == "landscape" else "1080 × 1920"),
+                        "duration": duration,
+                    })
+        completed = True
+        return videos
+    finally:
+        for stem in created:
+            for path in output_dir.glob(stem.name + ".*"):
+                if not completed or path.name.endswith((".background.png", ".layer.png", ".disc.png")):
+                    path.unlink(missing_ok=True)
 
 
 async def regenerate_workflow_videos(
@@ -364,27 +409,31 @@ async def regenerate_workflow_videos(
         settings = get_settings()
         output_dir = media_dir(item["output_dir"])
         audio_items = item.get("audio") or []
+        original_files = {p.name for p in output_dir.iterdir()}
+        new_covers = [dict(cover) for cover in item.get("covers") or []]
+        new_subtitles = [dict(track) for track in item.get("subtitles") or []]
         videos = await compose_videos(
-            wid, item, settings, output_dir, item.get("covers") or [], audio_items,
+            wid, item, settings, output_dir, new_covers, audio_items,
             description=item.get("description") or "",
             is_deleting=is_deleting, llm=llm, video_command=video_command,
             download_stock_videos=download_stock_videos, log_request=log_request,
             output_name=lambda index: f"video-{index + 1}-{stamp}.mp4",
-            subtitle_items=item.get("subtitles") or [],
+            subtitle_items=new_subtitles,
         )
         if videos is None or is_deleting(wid):
             return
-        if len(videos) != len(audio_items):
+        if len(videos) != len(audio_items) * 2:
             raise RuntimeError("视频合成失败，已保留原来的视频")
         with db() as conn:
             current = conn.execute("SELECT status FROM workflows WHERE id=?", (wid,)).fetchone()
         if not current or current["status"] != "completed" or is_deleting(wid):
             return
         previous = item.get("videos") or []
-        save(wid, payload_update={"videos": videos, "video_regenerating": False, "video_error": ""})
+        save(wid, payload_update={"videos": videos, "subtitles": new_subtitles, "covers": new_covers, "video_regenerating": False, "video_error": ""})
         succeeded = True
         try:
             remove_replaced_videos(output_dir, previous, videos)
+            remove_replaced_narration(output_dir, [], item.get("subtitles") or [], audio_items, new_subtitles)
         except OSError:
             return
     except Exception as exc:
@@ -394,6 +443,10 @@ async def regenerate_workflow_videos(
         regenerating.discard(wid)
         if output_dir is not None and not succeeded:
             discard_regeneration_files(output_dir, stamp)
+            if "original_files" in locals() and output_dir.is_dir():
+                for path in output_dir.iterdir():
+                    if path.name not in original_files and path.name.startswith(("cover-generated-", "draft-subtitles-", "video-")) and path.is_file():
+                        path.unlink(missing_ok=True)
 
 
 async def regenerate_workflow_audio(

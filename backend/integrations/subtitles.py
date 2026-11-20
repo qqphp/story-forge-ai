@@ -1,6 +1,8 @@
 """Subtitle files aligned to narration audio with stable-ts."""
 
 import json
+import re
+import unicodedata
 import os
 import subprocess
 import sys
@@ -29,18 +31,35 @@ def _timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
+def clean_caption(text: str, prefix: str = "", suffix: str = "") -> str:
+    chars = []
+    for i, char in enumerate(text):
+        previous = text[i - 1] if i else prefix[-1:]
+        following = text[i + 1] if i + 1 < len(text) else suffix[:1]
+        protected = (char in ".,:/-" and previous.isdigit() and following.isdigit()) or (char in "'’‐-" and previous.isascii() and previous.isalpha() and following.isascii() and following.isalpha())
+        if unicodedata.category(char).startswith("P") and not protected:
+            if previous.isascii() and previous.isalnum() and following.isascii() and following.isalnum():
+                chars.append(" ")
+        else:
+            chars.append(char)
+    return re.sub(r"[ \t]+", " ", "".join(chars)).strip()
+
+
 def normalize_cues(cues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = []
     for cue in cues:
-        text = str(cue.get("text", "")).strip()
+        text = clean_caption(str(cue.get("text", "")))
         if not text:
             continue
         start = max(0.0, float(cue.get("start", 0)))
         end = max(start, float(cue.get("end", start)))
         item: dict[str, Any] = {"start": round(start, 3), "end": round(end, 3), "text": text}
         words = []
-        for word in cue.get("words") or []:
-            token = str(word.get("word", "")).strip()
+        raw_words = cue.get("words") or []
+        for index, word in enumerate(raw_words):
+            prefix = str(raw_words[index-1].get("word", "")) if index else ""
+            suffix = str(raw_words[index+1].get("word", "")) if index+1 < len(raw_words) else ""
+            token = clean_caption(str(word.get("word", "")), prefix, suffix)
             if not token:
                 continue
             word_start = max(0.0, float(word.get("start", start)))
@@ -72,12 +91,56 @@ def render_json(cues: list[dict[str, Any]]) -> str:
         if "words" in cue:
             segment["words"] = cue["words"]
         segments.append(segment)
-    payload = {"text": "".join(segment["text"] for segment in segments), "segments": segments}
+    joined = ""
+    for segment in segments:
+        text = segment["text"]
+        if joined and text and joined[-1].isascii() and joined[-1].isalnum() and text[0].isascii() and text[0].isalnum():
+            joined += " "
+        joined += text
+    payload = {"text": joined, "segments": segments}
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def prepare_cues(cues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use alignment words for short phrases; legacy SRT stays within its cue span."""
+    result = []
+    for cue in cues:
+        words = cue.get("words") or []
+        if words:
+            group = []
+            for word in words:
+                token = str(word.get("word", ""))
+                if group and len(clean_caption("".join(str(w["word"]) for w in group) + token)) > 16:
+                    result.append({"start": group[0]["start"], "end": group[-1]["end"], "text": "".join(str(w["word"]) for w in group), "words": group})
+                    group = []
+                group.append(word)
+                if token.rstrip().endswith(tuple("，。！？；,!?;")):
+                    result.append({"start": group[0]["start"], "end": group[-1]["end"], "text": "".join(str(w["word"]) for w in group), "words": group})
+                    group = []
+            if group:
+                result.append({"start": group[0]["start"], "end": group[-1]["end"], "text": "".join(str(w["word"]) for w in group), "words": group})
+        else:
+            text = clean_caption(str(cue.get("text", "")))
+            tokens = re.findall(r"[A-Za-z0-9]+(?:[.'’,:/‐-][A-Za-z0-9]+)*|\s+|.", text)
+            pieces = []
+            piece = ""
+            for token in tokens:
+                if piece and len(piece + token) > 16:
+                    pieces.append(piece)
+                    piece = ""
+                piece += token
+            if piece:
+                pieces.append(piece)
+            cursor = float(cue.get("start", 0)); end = float(cue.get("end", cursor))
+            for piece in pieces:
+                stop = min(end, cursor + (end-float(cue.get("start", 0))) * len(piece) / len(text))
+                result.append({"start": cursor, "end": stop, "text": piece}); cursor=stop
+    return normalize_cues(result)
 
 
 def write_subtitle_files(audio_path: Path, cues: list[dict[str, Any]]) -> dict[str, Path]:
     """Write srt, txt and json next to the narration file."""
+    cues = prepare_cues(cues)
     targets = {
         "srt": audio_path.with_suffix(".srt"),
         "txt": audio_path.with_suffix(".txt"),

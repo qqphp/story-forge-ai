@@ -118,7 +118,7 @@ test("completed works can regenerate narration and videos use that narration", (
   assert.match(page, /\/regenerate-audio/);
   assert.match(page, /重新生成配音/);
   assert.match(page, /并同时重新生成字幕/);
-  assert.match(page, /使用当前最新的配音和字幕/);
+  assert.match(page, /使用最新配音/);
   assert.match(page, /<VoiceControl label="配音音色" voices=\{voiceChoices\}/);
   assert.match(page, /disabled=\{audioRegenerating\|\|videoRegenerating\|\|!voice\.trim\(\)\}/);
   assert.match(page, /disabled=\{videoRegenerating\|\|audioRegenerating\}/);
@@ -201,8 +201,9 @@ test("video details show encoded resolution and duration", () => {
   assert.match(page, /视频时长：\{formatVideoDuration\(a\.duration\)\}/);
 });
 
-test("cover prompt requires both video cover ratios", () => {
-  assert.match(page, /imageSizes\.includes\("16:9"\)&&imageSizes\.includes\("9:16"\)/);
+test("cover prompt requires square and both video cover ratios", () => {
+  assert.match(page, /\["1:1","16:9","9:16"\]\.every\(size=>imageSizes\.includes\(size\)\)/);
+  assert.match(page, /disabled=\{\["1:1","16:9","9:16"\]\.includes\(size\)\}/);
   assert.match(page, /<ImageSizePicker value=\{imageSizes\} onChange=\{setImageSizes\}\/>/);
   assert.match(page, /disabled=\{!connected\|\|!name\.trim\(\)\|\|!text\.trim\(\)\|\|\(kind==="cover"&&!hasRequiredCoverSizes\)\|\|saving\}/);
 });

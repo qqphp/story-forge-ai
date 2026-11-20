@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -74,6 +74,8 @@ def init_db() -> None:
 
 
 DEFAULT_SETTINGS = {
+    "background_overlay_enabled": True,
+    "background_overlay_opacity": 0.25,
     "text_api_base": "https://api.teamorouter.com/v1",
     "text_api_key": "",
     "image_api_base": "https://api.teamorouter.com/v1",
@@ -86,7 +88,7 @@ DEFAULT_SETTINGS = {
     "voices": ["zh-CN-XiaoxiaoNeural"],
     "speech_rate": 0,
     "video_orientation": "portrait",
-    "burn_subtitles": False,
+    "burn_subtitles": True,
     "video_generation_method": "local",
     "stock_video_provider": "pexels",
     "pexels_api_base": "https://api.pexels.com/v1/videos/search",
@@ -515,3 +517,29 @@ def workflow_regenerate_audio(wid: str, value: AudioRegenerateRequest, tasks: Ba
     queue_audio_regeneration(db, save_workflow, REGENERATING_AUDIO, wid, value.voice)
     tasks.add_task(process_audio_regeneration, wid)
     return {"id": wid, "status": "completed", "audio_regenerating": True}
+
+
+@app.post("/api/video/record-label-images", status_code=201)
+async def upload_record_label(request: Request):
+    from backend.integrations.record_labels import store_label
+    chunks = []
+    length = 0
+    async for chunk in request.stream():
+        length += len(chunk)
+        if length > 10 * 1024 * 1024:
+            raise HTTPException(413, "图片不能超过 10MB")
+        chunks.append(chunk)
+    try:
+        image_id = await asyncio.to_thread(store_label, b"".join(chunks))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"id": image_id, "url": f"/api/video/record-label-images/{image_id}"}
+
+
+@app.get("/api/video/record-label-images/{image_id}")
+def read_record_label(image_id: str):
+    import re
+    from backend.integrations.record_labels import label_path
+    if image_id not in ("initial", "default") and not re.fullmatch(r"[a-f0-9]{32}", image_id):
+        raise HTTPException(404, "图片不存在")
+    return FileResponse(label_path(None if image_id == "default" else image_id), media_type="image/png")

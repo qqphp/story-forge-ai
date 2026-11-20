@@ -71,4 +71,7 @@ def initialize_schema(db: Callable[[], ContextManager[sqlite3.Connection]]) -> N
             if any("x" in size for size in sizes):
                 ratios = list(dict.fromkeys(legacy_size_ratios.get(size, "2:3") for size in sizes))
                 conn.execute("UPDATE prompt_templates SET image_sizes=? WHERE id=?", (json.dumps(ratios), row["id"]))
+        for row in conn.execute("SELECT id,image_sizes FROM prompt_templates WHERE kind='cover'").fetchall():
+            sizes = list(dict.fromkeys(json.loads(row["image_sizes"]) + ["1:1", "16:9", "9:16"]))
+            conn.execute("UPDATE prompt_templates SET image_sizes=? WHERE id=?", (json.dumps(sizes), row["id"]))
         conn.execute("PRAGMA optimize")
