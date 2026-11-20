@@ -123,6 +123,8 @@ class SubtitleStyle(BaseModel):
 
 
 class SubtitlePreview(BaseModel):
+    background_blur_enabled: bool = False
+    background_blur_strength: float = Field(default=20, ge=0, le=100)
     background_overlay_enabled: bool = True
     background_overlay_opacity: float = Field(default=0.25, ge=0, le=1)
     record_label_image_id: str | None = Field(default=None, pattern=r"^(initial|[a-f0-9]{32})$")
@@ -136,6 +138,8 @@ class MusicDefaultRequest(BaseModel):
 
 
 class SettingsPayload(BaseModel):
+    background_blur_enabled: bool = False
+    background_blur_strength: float = Field(default=20, ge=0, le=100)
     background_overlay_enabled: bool = True
     background_overlay_opacity: float = Field(default=0.25, ge=0, le=1)
     record_label_image_id: str | None = Field(default=None, pattern=r"^(initial|[a-f0-9]{32})$")

@@ -38,10 +38,12 @@ class VideoUpgradeTests(unittest.TestCase):
                     name=f'{group}-{ratio.replace(":","-")}.png'
                     covers.append(dict(prompt_id=group,image_ratio=ratio,url='/media/x/'+name))
             def command(ffmpeg,cover,audio,out,**kwargs):
+                self.assertTrue(kwargs['background_blur_enabled'])
+                self.assertEqual(kwargs['background_blur_strength'],73)
                 calls.append((cover.name,kwargs['orientation'],kwargs['background_cover'].name));return [ffmpeg,str(out)]
             def run(command,**kwargs):
                 Path(command[-1]).write_bytes(b'video');return type('Result',(),dict(returncode=0,stderr=b''))()
             with patch('backend.integrations.player.player_command',side_effect=command),patch('backend.modules.workflows.executor.subprocess.run',side_effect=run),patch('backend.modules.workflows.executor.probe_audio_duration',return_value=1),patch('backend.modules.workflows.executor.probe_video_metadata',return_value=(None,1)):
-                videos=asyncio.run(compose_videos('x',dict(book_title='测试',output_dir='x'),dict(burn_subtitles=False),root,covers,[dict(draft_id=g,voice='voice',url=f'/media/x/{g}.mp3') for g in ('a','b')],description='',is_deleting=lambda _:False,llm=AsyncMock(),video_command=command,download_stock_videos=AsyncMock(),log_request=lambda *a:None))
+                videos=asyncio.run(compose_videos('x',dict(book_title='测试',output_dir='x'),dict(burn_subtitles=False,background_blur_enabled=True,background_blur_strength=73),root,covers,[dict(draft_id=g,voice='voice',url=f'/media/x/{g}.mp3') for g in ('a','b')],description='',is_deleting=lambda _:False,llm=AsyncMock(),video_command=command,download_stock_videos=AsyncMock(),log_request=lambda *a:None))
             self.assertEqual(calls,[('a-1-1.png','landscape','a-16-9.png'),('a-1-1.png','portrait','a-9-16.png'),('b-1-1.png','landscape','b-16-9.png'),('b-1-1.png','portrait','b-9-16.png')])
             self.assertEqual(len({v['url'] for v in videos}),4)

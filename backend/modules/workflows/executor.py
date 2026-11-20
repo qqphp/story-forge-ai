@@ -347,7 +347,7 @@ async def compose_videos(
                 try:
                     result = await asyncio.to_thread(
                         subprocess.run,
-                        player_command(ffmpeg, cover, narration, out, background_cover=background_cover, record_label_image_id=settings.get("record_label_image_id"), duration=narration_duration, background_overlay_enabled=settings.get("background_overlay_enabled", True), background_overlay_opacity=settings.get("background_overlay_opacity", .25), orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles, subtitle_style=settings.get("subtitle_style")),
+                        player_command(ffmpeg, cover, narration, out, background_cover=background_cover, record_label_image_id=settings.get("record_label_image_id"), duration=narration_duration, background_overlay_enabled=settings.get("background_overlay_enabled", True), background_overlay_opacity=settings.get("background_overlay_opacity", .25), background_blur_enabled=settings.get("background_blur_enabled", False), background_blur_strength=settings.get("background_blur_strength", 20), orientation=orientation, stock_manifest=stock_manifest, subtitles=subtitles, subtitle_style=settings.get("subtitle_style")),
                         capture_output=True,
                         timeout=video_encode_timeout(narration_duration),
                     )

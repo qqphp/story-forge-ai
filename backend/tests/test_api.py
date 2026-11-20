@@ -39,6 +39,20 @@ class StoryForgeApiTests(unittest.TestCase):
         main.REGENERATING_VIDEOS.clear()
         self.db_patch.stop(); self.media_patch.stop(); self.voice_samples_patch.stop(); self.voice_translations_patch.stop(); self.temp.cleanup()
 
+    def test_background_blur_settings_round_trip_and_preview_validation(self):
+        settings = self.client.get("/api/settings").json()
+        self.assertFalse(settings["background_blur_enabled"])
+        self.assertEqual(settings["background_blur_strength"], 20)
+        for enabled, strength in ((True, 73), (False, 73), (True, 0), (True, 100)):
+            response = self.client.put("/api/settings", json={**settings, "background_blur_enabled": enabled, "background_blur_strength": strength})
+            self.assertEqual(response.status_code, 200)
+            saved = self.client.get("/api/settings").json()
+            self.assertEqual(saved["background_blur_enabled"], enabled)
+            self.assertEqual(saved["background_blur_strength"], strength)
+        for strength in (-1, 101):
+            self.assertEqual(self.client.put("/api/settings", json={**settings, "background_blur_strength": strength}).status_code, 422)
+            self.assertEqual(self.client.post("/api/subtitle-preview", json={"background_blur_strength": strength}).status_code, 422)
+
     def test_background_overlay_settings_round_trip_and_preview_validation(self):
         settings = self.client.get("/api/settings").json()
         self.assertTrue(settings["background_overlay_enabled"])

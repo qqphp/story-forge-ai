@@ -19,6 +19,8 @@ export function SubtitleSettings({ form, onChange, connected }: Props) {
   const labelImage = form.record_label_image_id;
   const overlayEnabled = form.background_overlay_enabled;
   const overlayOpacity = form.background_overlay_opacity;
+  const blurEnabled = form.background_blur_enabled;
+  const blurStrength = form.background_blur_strength;
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();
@@ -34,7 +36,7 @@ export function SubtitleSettings({ form, onChange, connected }: Props) {
       try {
         const response = await fetch(`${API_BASE}/api/subtitle-preview`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ orientation, record_label_image_id:labelImage, background_overlay_enabled:overlayEnabled, background_overlay_opacity:overlayOpacity, style: JSON.parse(serialized) }),
+          body: JSON.stringify({ orientation, record_label_image_id:labelImage, background_overlay_enabled:overlayEnabled, background_overlay_opacity:overlayOpacity, background_blur_enabled:blurEnabled, background_blur_strength:blurStrength, style: JSON.parse(serialized) }),
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
         });
         if (!response.ok) { const data = await response.json(); throw new Error(typeof data.detail === "string" ? data.detail : "预览生成失败"); }
@@ -46,7 +48,7 @@ export function SubtitleSettings({ form, onChange, connected }: Props) {
       } finally { if (!controller.signal.aborted) setLoading(false); }
     }, 450);
     return () => { window.clearTimeout(timer); controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [connected, orientation, serialized, labelImage, overlayEnabled, overlayOpacity]);
+  }, [connected, orientation, serialized, labelImage, overlayEnabled, overlayOpacity, blurEnabled, blurStrength]);
   return <section className="subtitle-settings settings-pane">
     <div className="subtitle-style-controls">
       <label className={`subtitle-burn-option${form.burn_subtitles ? " selected" : ""}`} htmlFor="subtitle-burn-enabled"><input id="subtitle-burn-enabled" type="checkbox" checked={form.burn_subtitles} onChange={e => onChange({ ...form, burn_subtitles: e.target.checked })}/><span><b>烧录字幕</b><small>将字幕直接渲染到生成的视频画面中</small></span><i>{form.burn_subtitles ? "已开启" : "已关闭"}</i></label>

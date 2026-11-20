@@ -16,7 +16,7 @@ def artwork(cover: Path, output: Path, width: int, height: int, background_cover
     with Image.open(cover) as source:
         source = source.convert('RGB')
         with Image.open(background_cover or cover) as bg_source:
-            background = ImageOps.fit(bg_source.convert('RGB'), (width, height)).filter(ImageFilter.GaussianBlur(6))
+            background = ImageOps.fit(bg_source.convert('RGB'), (width, height))
         layer = Image.new('RGBA', (width, height))
         draw = ImageDraw.Draw(layer)
         x, y, size = box['cover']
@@ -72,7 +72,7 @@ def artwork(cover: Path, output: Path, width: int, height: int, background_cover
     return box
 
 
-def player_command(ffmpeg, cover, narration, output, *, orientation='portrait', stock_manifest=None, subtitles=None, subtitle_style=None, background_overlay_enabled=True, background_overlay_opacity=.25, duration=None, background_cover=None, record_label_image_id=None, **kwargs):
+def player_command(ffmpeg, cover, narration, output, *, orientation='portrait', stock_manifest=None, subtitles=None, subtitle_style=None, background_overlay_enabled=True, background_overlay_opacity=.25, background_blur_enabled=False, background_blur_strength=20, duration=None, background_cover=None, record_label_image_id=None, **kwargs):
     from backend.integrations.video import probe_audio_duration
     from backend.integrations.subtitle_burn import burn_subtitle_filter
     duration=duration or probe_audio_duration(narration)
@@ -86,6 +86,8 @@ def player_command(ffmpeg, cover, narration, output, *, orientation='portrait', 
     filters=[]
     base=f'[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1'
     if stock_manifest:base+=',eq=saturation=0.5,colorbalance=bs=0.15'
+    if background_blur_enabled and background_blur_strength > 0:
+        base += f',gblur=sigma={background_blur_strength * .3:g}'
     if background_overlay_enabled:
         brightness = 1 - background_overlay_opacity
         base += f',lutrgb=r=val*{brightness}:g=val*{brightness}:b=val*{brightness}'

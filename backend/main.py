@@ -74,6 +74,8 @@ def init_db() -> None:
 
 
 DEFAULT_SETTINGS = {
+    "background_blur_enabled": False,
+    "background_blur_strength": 20,
     "background_overlay_enabled": True,
     "background_overlay_opacity": 0.25,
     "text_api_base": "https://api.teamorouter.com/v1",

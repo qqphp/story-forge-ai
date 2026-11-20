@@ -494,6 +494,7 @@
 .background-overlay-slider input { width: 100%; accent-color: var(--ink); }
 .background-overlay-slider small { color: #75807b; font-size: 12px; font-weight: 400; }
 .background-overlay-slider:has(input:disabled) { opacity: .5; }
+.background-blur-toggle { margin-top: 28px !important; }
 @media (max-width: 600px) {
   .record-label-settings { flex-direction: column-reverse; align-items: stretch; }
   .record-label-upload { padding: 16px; gap: 12px; }

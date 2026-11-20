@@ -28,6 +28,8 @@ def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[
             conn.execute("INSERT INTO settings(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", (json.dumps(stored, ensure_ascii=False),))
     stored.setdefault("background_overlay_enabled", True)
     stored.setdefault("background_overlay_opacity", 0.25)
+    stored.setdefault("background_blur_enabled", False)
+    stored.setdefault("background_blur_strength", 20)
     stored.setdefault("record_label_image_id", "initial")
     legacy_speech_region = stored.pop("azure_speech_region", None)
     for provider in ("text", "image"):
@@ -70,7 +72,7 @@ def to_public(settings: dict[str, Any]) -> dict[str, Any]:
 def save_settings(db: Callable[[], AbstractContextManager[Any]], current: dict[str, Any], value: SettingsPayload) -> dict[str, Any]:
     incoming = value.model_dump()
     incoming["_player_template_version"] = 1
-    for key, default in (("background_overlay_enabled", True), ("background_overlay_opacity", 0.25)):
+    for key, default in (("background_overlay_enabled", True), ("background_overlay_opacity", 0.25), ("background_blur_enabled", False), ("background_blur_strength", 20)):
         if key not in value.model_fields_set:
             incoming[key] = current.get(key, default)
     if "record_label_image_id" not in value.model_fields_set:
