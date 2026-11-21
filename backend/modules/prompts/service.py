@@ -35,18 +35,23 @@ def create_template(db: Callable[[], AbstractContextManager[Any]], value: Prompt
     _require_video_cover_sizes(value.kind, value.image_sizes)
     prompt_id, now = uuid.uuid4().hex[:12], int(time.time())
     with db() as conn:
-        conn.execute("INSERT INTO prompt_templates(id,kind,name,text,created_at,updated_at,image_sizes) VALUES(?,?,?,?,?,?,?)", (prompt_id, value.kind, value.name.strip(), value.text.strip(), now, now, json.dumps(value.image_sizes)))
+        conn.execute("INSERT INTO prompt_templates(id,kind,name,text,created_at,updated_at,image_sizes,duration_minutes) VALUES(?,?,?,?,?,?,?,?)",
+                     (prompt_id, value.kind, value.name.strip(), value.text.strip(), now, now, json.dumps(value.image_sizes),
+                      value.duration_minutes if value.kind == "writing" else None))
         row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
     return prompt_template_row(row)
 
 
 def update_template(db: Callable[[], AbstractContextManager[Any]], prompt_id: str, value: PromptTemplateUpdate) -> dict[str, Any]:
     with db() as conn:
-        existing = conn.execute("SELECT kind FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
+        existing = conn.execute("SELECT kind,duration_minutes FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
         if not existing:
             raise HTTPException(404, "提示词不存在")
         _require_video_cover_sizes(existing["kind"], value.image_sizes)
-        result = conn.execute("UPDATE prompt_templates SET name=?,text=?,image_sizes=?,updated_at=? WHERE id=?", (value.name.strip(), value.text.strip(), json.dumps(value.image_sizes), int(time.time()), prompt_id))
+        duration = value.duration_minutes if "duration_minutes" in value.model_fields_set else existing["duration_minutes"]
+        conn.execute("UPDATE prompt_templates SET name=?,text=?,image_sizes=?,updated_at=?,duration_minutes=? WHERE id=?",
+                     (value.name.strip(), value.text.strip(), json.dumps(value.image_sizes), int(time.time()),
+                      duration if existing["kind"] == "writing" else None, prompt_id))
         row = conn.execute("SELECT * FROM prompt_templates WHERE id=?", (prompt_id,)).fetchone()
     return prompt_template_row(row)
 

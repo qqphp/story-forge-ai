@@ -3,16 +3,16 @@
 import json
 from typing import Any
 
+from backend.modules.workflows.broadcast import PROGRAM_NAME
 
-def demo_copy(title: str, author: str, prompt: str, index: int) -> str:
-    angle = prompt or ["把复杂世界重新看清", "一次真诚而克制的阅读分享", "从书页走回自己的生活"][index % 3]
-    byline = f"，{author}写下的" if author else "，这本"
+
+def demo_copy(title: str, author: str | None) -> str:
+    byline = f"，作者是{author}" if author else ""
     return (
-        f"如果一本书能让你在合上它之后，重新看待自己的生活，《{title}》或许就是这样一本书。"
-        f"{byline}作品没有急着给出标准答案，而是沿着“{angle}”这条线索，把那些被我们忽略的细节慢慢照亮。\n\n"
-        "它真正动人的地方，不是观点有多响亮，而是读到某一页时，你忽然发现作者写的也是自己。"
-        "那些犹豫、选择和未说出口的话，都在故事里获得了新的解释。\n\n"
-        f"推荐你读《{title}》。不必赶进度，给它一个安静的晚上，也给自己一次重新整理内心的机会。"
+        f"你好，欢迎来到{PROGRAM_NAME}。今天这段配音用来试听节目的声音和节奏。"
+        f"我们准备分享的书是《{title}》{byline}。\n\n"
+        "有时候，读完一页，可以先把书放下来，想一想刚才哪句话让自己停住了。"
+        "谢谢你今天的陪伴，我们下次再见。"
     )
 
 

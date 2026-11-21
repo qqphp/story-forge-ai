@@ -32,6 +32,11 @@ class BookCreate(BaseModel):
     author: str = Field(default="", max_length=120)
     edition: str = Field(default="", max_length=120)
 
+    @field_validator("book_title", mode="before")
+    @classmethod
+    def trim_title(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
 
 class WorkflowCreate(WorkflowOptions, BookCreate):
     pass
@@ -49,6 +54,10 @@ class AudioRegenerateRequest(BaseModel):
         return voice
 
 
+class CoverRegenerateRequest(BaseModel):
+    cover_url: str = Field(min_length=1, max_length=2048)
+
+
 class BatchWorkflowCreate(WorkflowOptions):
     books: list[BookCreate] = Field(min_length=1, max_length=50)
 
@@ -62,6 +71,7 @@ class PromptTemplateCreate(BaseModel):
     kind: str = Field(pattern="^(writing|cover)$")
     name: str = Field(min_length=1, max_length=80)
     text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
+    duration_minutes: int | None = Field(default=None, ge=1, le=60)
     image_sizes: list[str] = Field(default_factory=lambda: list(DEFAULT_IMAGE_SIZES), max_length=len(IMAGE_SIZES))
 
     @field_validator("image_sizes")
@@ -76,6 +86,7 @@ class PromptTemplateCreate(BaseModel):
 class PromptTemplateUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     text: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
+    duration_minutes: int | None = Field(default=None, ge=1, le=60)
     image_sizes: list[str] = Field(default_factory=lambda: list(DEFAULT_IMAGE_SIZES), max_length=len(IMAGE_SIZES))
 
     @field_validator("image_sizes")
@@ -150,6 +161,8 @@ class SettingsPayload(BaseModel):
     image_api_key: str = ""
     model: str = ""
     image_model: str = ""
+    firecrawl_enabled: bool = True
+    firecrawl_api_key: str = ""
     azure_speech_key: str = ""
     azure_speech_base: str = "https://eastus.tts.speech.microsoft.com"
     voice_format: str = "audio-24khz-48kbitrate-mono-mp3"

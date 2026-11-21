@@ -38,7 +38,12 @@ def _fit(draw: ImageDraw.ImageDraw, text: str, font_file: Path, width: int, heig
 
 
 def render_local_cover(path: Path, title: str, author: str, ratio: str, style_index: int) -> dict[str, str]:
-    width, height = SIZES[ratio]
+    if ratio in SIZES:
+        width, height = SIZES[ratio]
+    else:
+        horizontal, vertical = map(float, ratio.split(":"))
+        scale = 1080 / min(horizontal, vertical)
+        width, height = round(horizontal * scale), round(vertical * scale)
     key, name, background, ink, accent = STYLES[style_index]
     image = Image.new("RGB", (width, height), background)
     draw = ImageDraw.Draw(image)

@@ -91,8 +91,7 @@ test("workflow creation supports background music mixing controls", () => {
   assert.match(page, /function MusicMixControl/);
   assert.match(page, /background_music_id:musicId\|\|null/);
   assert.match(page, /background_music_volume:musicVolume/);
-  assert.match(page, /const \[musicVolume,setMusicVolume\]=useState\(0\.2\)/);
-  assert.equal((page.match(/\[musicVolume,setMusicVolume\]=useState\(0\.2\)/g) || []).length, 2);
+  assert.equal((page.match(/\[musicVolume,setMusicVolume\]=useState\(0\.1\)/g) || []).length, 2);
   assert.match(page, /音量 <b>\{volume\.toFixed\(2\)\}<\/b>[\s\S]*?type="range" min="0" max="1" step="0\.05"/);
   assert.match(page, /淡入时间/);
   assert.match(page, /淡出时间/);
@@ -120,11 +119,22 @@ test("completed works can regenerate narration and videos use that narration", (
   assert.match(page, /并同时重新生成字幕/);
   assert.match(page, /使用最新配音/);
   assert.match(page, /<VoiceControl label="配音音色" voices=\{voiceChoices\}/);
-  assert.match(page, /disabled=\{audioRegenerating\|\|videoRegenerating\|\|!voice\.trim\(\)\}/);
-  assert.match(page, /disabled=\{videoRegenerating\|\|audioRegenerating\}/);
+  assert.match(page, /disabled=\{audioRegenerating\|\|videoRegenerating\|\|!!coverRegenerating\|\|!voice\.trim\(\)\}/);
+  assert.match(page, /disabled=\{videoRegenerating\|\|audioRegenerating\|\|!!coverRegenerating\}/);
 });
 
-test("workflow details expose generated tags, topics and subtitles as an eight-step pipeline", () => {
+test("book creation uses bibliographic inputs and the workspace exposes search and single-cover regeneration", () => {
+  assert.doesNotMatch(page, /原书资料或读书笔记|source_notes/);
+  assert.match(page, /<b>Firecrawl 搜索<\/b>/);
+  assert.match(page, /<option value="图书资料搜索">图书资料搜索<\/option>/);
+  assert.match(page, /\/regenerate-cover/);
+  assert.match(page, /JSON\.stringify\(\{cover_url:coverUrl\}\)/);
+  assert.match(page, /重新生成此封面/);
+});
+
+test("workflow details show one writing step in a seven-step pipeline", () => {
+  assert.match(page, /"理解书籍", "文案撰写", "生成配音"/);
+  assert.doesNotMatch(page, /自然化优化/);
   assert.match(page, /"生成配音", "生成字幕", "生成标签和话题"/);
   assert.match(page, /task\.tags\?\.length/);
   assert.match(page, /task\.topics\?\.length/);
@@ -139,7 +149,7 @@ test("workflow details expose generated tags, topics and subtitles as an eight-s
   assert.match(backend, /文稿生成超时，模型在限定时间内没有返回/);
   assert.match(backend, /client_factory\(timeout=300\) as client/);
   assert.match(css, /\.steps>span\.failed\{color:#97453f\}/);
-  assert.match(css, /grid-template-columns:repeat\(8,1fr\)/);
+  assert.match(css, /\.steps\{display:grid;grid-template-columns:repeat\(7,minmax\(0,1fr\)\)/);
   assert.match(css, /\.taxonomy-panel/);
   assert.match(css, /\.subtitle-downloads/);
 });
@@ -163,7 +173,7 @@ test("configuration and request logs use standalone sidebar pages", () => {
 test("prompt library tabs have icons subtitles and a single-column mobile editor", () => {
   assert.match(page, /className="settings-tabs prompt-tabs"/);
   assert.match(page, /<span aria-hidden="true">文<\/span>/);
-  assert.match(page, /<small>定义分享稿结构、语气与长度<\/small>/);
+  assert.match(page, /<small>查看生成流程，调整节目模板<\/small>/);
   assert.match(page, /<span aria-hidden="true">画<\/span>/);
   assert.match(page, /<small>定义封面风格、构图与色彩<\/small>/);
   assert.match(css, /\.config-page \.library-layout\{grid-template-columns:minmax\(0,1fr\)/);

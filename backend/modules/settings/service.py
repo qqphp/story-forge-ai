@@ -40,6 +40,7 @@ def load_settings(db: Callable[[], AbstractContextManager[Any]], defaults: dict[
     stored.pop("api_base", None)
     stored.pop("api_key", None)
     result = defaults | stored
+    result["firecrawl_api_key"] = stored.get("firecrawl_api_key", os.getenv("FIRECRAWL_API_KEY", ""))
     result["subtitle_style"] = SubtitleStyle.model_validate(result.get("subtitle_style") or {}).model_dump()
     if "azure_speech_base" not in stored:
         if legacy_speech_region:
@@ -63,6 +64,7 @@ def to_public(settings: dict[str, Any]) -> dict[str, Any]:
     result = {key: value for key, value in settings.items() if not key.startswith("_")}
     result["text_api_key"] = "••••••••" if result.get("text_api_key") else ""
     result["image_api_key"] = "••••••••" if result.get("image_api_key") else ""
+    result["firecrawl_api_key"] = "••••••••" if result.get("firecrawl_api_key") else ""
     result["azure_speech_key"] = "••••••••" if result.get("azure_speech_key") else ""
     result["pexels_api_key"] = "••••••••" if result.get("pexels_api_key") else ""
     result["pixabay_api_key"] = "••••••••" if result.get("pixabay_api_key") else ""
@@ -83,5 +85,17 @@ def save_settings(db: Callable[[], AbstractContextManager[Any]], current: dict[s
         if incoming[key] == "••••••••":
             incoming[key] = current.get(key, "")
     with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT payload FROM settings WHERE id=1").fetchone()
+        stored = json.loads(row["payload"]) if row else {}
+        for field in ("firecrawl_enabled", "firecrawl_api_key"):
+            if field not in value.model_fields_set or incoming[field] == "••••••••":
+                if field in stored:
+                    incoming[field] = stored[field]
+                else:
+                    incoming.pop(field)
+        if "firecrawl_api_key" in incoming:
+            incoming["firecrawl_api_key"] = incoming["firecrawl_api_key"].strip()
         conn.execute("INSERT INTO settings(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", (json.dumps(incoming, ensure_ascii=False),))
-    return incoming
+    return {**incoming, "firecrawl_enabled": incoming.get("firecrawl_enabled", True),
+            "firecrawl_api_key": incoming.get("firecrawl_api_key", os.getenv("FIRECRAWL_API_KEY", ""))}

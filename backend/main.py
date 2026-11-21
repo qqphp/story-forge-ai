@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from backend.modules.contracts import (
-    AudioRegenerateRequest, BackgroundMusicCreate, BatchWorkflowCreate, BookCreate,
+    AudioRegenerateRequest, BackgroundMusicCreate, BatchWorkflowCreate, BookCreate, CoverRegenerateRequest,
     PromptTemplateCreate, PromptTemplateUpdate, WorkflowCreate, WorkflowOptions, MusicDefaultRequest, SubtitlePreview,
 )
 from backend.modules.serializers import workflow_row
@@ -33,6 +33,7 @@ from backend.modules.request_logs.service import clear_logs, list_logs, record_l
 from backend.modules.settings.service import load_settings, save_settings, to_public
 from backend.integrations.chat import complete_chat
 from backend.integrations.cover import generate_cover as generate_external_cover, make_local_cover
+from backend.integrations.firecrawl import search_book as search_book_sources
 from backend.integrations.speech import (
     audio_extension as speech_audio_extension,
     build_ssml,
@@ -44,10 +45,12 @@ from backend.integrations.video import video_command as build_video_command
 from backend.integrations.stock_video import download_stock_videos
 from backend.integrations.subtitles import generate_subtitles, subtitle_language
 from backend.modules.workflows.application import (
-    create_workflow, delete_workflow, queue_audio_regeneration, queue_retry, queue_video_regeneration,
+    create_workflow, delete_workflow, queue_audio_regeneration, queue_cover_regeneration, queue_retry, queue_video_regeneration,
     release_interrupted_video_regenerations,
 )
 from backend.modules.workflows.executor import execute_workflow, regenerate_workflow_audio, regenerate_workflow_videos
+from backend.modules.workflows.broadcast import writing_pipeline
+from backend.modules.workflows.cover_regeneration import regenerate_workflow_cover
 from backend.modules.workflows.repository import get_workflow, list_workflows, save_workflow as persist_workflow
 from backend.api.system import build_router as build_system_router
 
@@ -84,6 +87,8 @@ DEFAULT_SETTINGS = {
     "image_api_key": "",
     "model": "",
     "image_model": "",
+    "firecrawl_enabled": True,
+    "firecrawl_api_key": "",
     "azure_speech_key": "",
     "azure_speech_base": "https://eastus.tts.speech.microsoft.com",
     "voice_format": "audio-24khz-48kbitrate-mono-mp3",
@@ -163,15 +168,19 @@ async def llm(messages: list[dict[str, str]], settings: dict[str, Any], request_
     return await complete_chat(messages, settings, request_type, log_request, httpx.AsyncClient)
 
 
+async def search_book(book: dict[str, str], settings: dict[str, Any]) -> list[dict[str, str]]:
+    return await search_book_sources(book, settings, log_request, httpx.AsyncClient)
+
+
 def make_cover(path: Path, title: str, author: str, index: int) -> None:
     make_local_cover(path, title, author, index)
 
 
 async def generate_cover(path: Path, title: str, author: str, description: str,
-                         prompt: str, index: int, image_ratio: str, settings: dict[str, Any]) -> tuple[bool, str]:
+                         prompt: str, index: int, image_ratio: str, settings: dict[str, Any], *, allow_fallback: bool = True) -> tuple[bool, str]:
     return await generate_external_cover(
         path, title, author, description, prompt, index, image_ratio, settings,
-        log_request, httpx.AsyncClient, make_cover,
+        log_request, httpx.AsyncClient, make_cover, allow_fallback=allow_fallback,
     )
 
 
@@ -191,7 +200,7 @@ async def speech(text: str, voice: str, rate: int, settings: dict[str, Any], out
                  background_music: dict[str, Any] | None = None,
                  background_volume: float = .2,
                  background_fade_in: float = 2,
-                 background_fade_out: float = 2) -> bool:
+                 background_fade_out: float = 2) -> Path | None:
     return await synthesize(text, voice, rate, settings, output, speech_ssml, make_demo_wav,
                             log_request, httpx.AsyncClient, background_music, background_volume,
                             background_fade_in, background_fade_out)
@@ -209,7 +218,7 @@ async def process_workflow(wid: str) -> None:
     await execute_workflow(wid, db=db, workflow_row=workflow_row, get_settings=get_settings,
                            media_dir=workflow_media_dir, save=save_workflow,
                            is_deleting=DELETING_WORKFLOWS.__contains__, cleanup_deleted=cleanup_deleted,
-                           llm=llm, speech=speech, audio_extension=audio_extension,
+                           llm=llm, search_book=search_book, speech=speech, audio_extension=audio_extension,
                            generate_cover=generate_cover, video_command=build_video_command,
                            download_stock_videos=download_stock_videos, log_request=log_request,
                            generate_subtitles=generate_subtitles, subtitle_language=subtitle_language)
@@ -233,6 +242,11 @@ async def process_audio_regeneration(wid: str) -> None:
         speech=speech, audio_extension=audio_extension,
         generate_subtitles=generate_subtitles, subtitle_language=subtitle_language,
     )
+
+
+async def process_cover_regeneration(wid: str, job: dict[str, str]) -> None:
+    await regenerate_workflow_cover(wid, job, db=db, media_dir=workflow_media_dir, get_settings=get_settings,
+                                    generate_cover=generate_cover)
 
 
 def _voice_text(value: Any) -> str:
@@ -442,6 +456,11 @@ def prompts_list(kind: str | None = None):
     return list_templates(db, kind)
 
 
+@app.get("/api/prompts/writing-pipeline")
+def prompts_writing_pipeline():
+    return writing_pipeline()
+
+
 @app.post("/api/prompts", status_code=201)
 def prompt_create(value: PromptTemplateCreate):
     return create_template(db, value)
@@ -500,25 +519,32 @@ def workflows_batch_create(value: BatchWorkflowCreate, tasks: BackgroundTasks):
 
 @app.post("/api/workflows/{wid}/retry", status_code=202)
 def workflow_retry(wid: str, tasks: BackgroundTasks):
+    queue_retry(db, wid)
     REGENERATING_VIDEOS.discard(wid)
     REGENERATING_AUDIO.discard(wid)
-    queue_retry(db, save_workflow, wid)
     tasks.add_task(process_workflow, wid)
     return {"id": wid, "status": "queued"}
 
 
 @app.post("/api/workflows/{wid}/regenerate-video", status_code=202)
 def workflow_regenerate_video(wid: str, tasks: BackgroundTasks):
-    queue_video_regeneration(db, save_workflow, REGENERATING_VIDEOS, wid)
+    queue_video_regeneration(db, REGENERATING_VIDEOS, wid)
     tasks.add_task(process_video_regeneration, wid)
     return {"id": wid, "status": "completed", "video_regenerating": True}
 
 
 @app.post("/api/workflows/{wid}/regenerate-audio", status_code=202)
 def workflow_regenerate_audio(wid: str, value: AudioRegenerateRequest, tasks: BackgroundTasks):
-    queue_audio_regeneration(db, save_workflow, REGENERATING_AUDIO, wid, value.voice)
+    queue_audio_regeneration(db, REGENERATING_AUDIO, wid, value.voice)
     tasks.add_task(process_audio_regeneration, wid)
     return {"id": wid, "status": "completed", "audio_regenerating": True}
+
+
+@app.post("/api/workflows/{wid}/regenerate-cover", status_code=202)
+def workflow_regenerate_cover(wid: str, value: CoverRegenerateRequest, tasks: BackgroundTasks):
+    job = queue_cover_regeneration(db, wid, value.cover_url)
+    tasks.add_task(process_cover_regeneration, wid, job)
+    return {"id": wid, "status": "completed", "cover_regenerating": job}
 
 
 @app.post("/api/video/record-label-images", status_code=201)

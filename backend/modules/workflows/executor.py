@@ -13,21 +13,10 @@ from typing import Any
 
 from backend.modules.contracts import DEFAULT_IMAGE_SIZES
 from backend.integrations.local_covers import generate_local_covers
+from backend.modules.workflows.broadcast import BroadcastWriter, DEFAULT_WRITING_GUIDANCE, WorkflowDeleted
 from backend.modules.workflows.content import demo_copy, generated_taxonomy
 from backend.integrations.video import probe_audio_duration, probe_video_metadata, video_encode_timeout, write_concat_manifest
 from backend.integrations.stock_video import natural_scenery_query
-
-
-def share_draft_user_content(title: str, author: str | None, edition: str | None) -> str:
-    """User message for an original share draft: title, author, and edition only."""
-    lines = [f"书名：{title.strip()}"]
-    author_text = (author or "").strip()
-    edition_text = (edition or "").strip()
-    if author_text:
-        lines.append(f"作者：{author_text}")
-    if edition_text:
-        lines.append(f"版本：{edition_text}")
-    return "\n".join(lines)
 
 
 async def execute_workflow(
@@ -41,6 +30,7 @@ async def execute_workflow(
     is_deleting: Callable[[str], bool],
     cleanup_deleted: Callable[[str], None],
     llm: Callable[..., Any],
+    search_book: Callable[..., Any],
     speech: Callable[..., Any],
     audio_extension: Callable[[str], str],
     generate_cover: Callable[..., Any],
@@ -62,33 +52,29 @@ async def execute_workflow(
         title, author = item["book_title"], item["author"]
         save(wid, status="running", step=1, progress=8)
         await asyncio.sleep(.4)
-        description = await llm([
-            {"role": "system", "content": "你是严谨的中文图书编辑。只输出160个字以内的书籍简介，不虚构具体事实。"},
-            {"role": "user", "content": f"书名：{title}；作者：{author or '未知'}；版本：{item['edition'] or '未指定'}"},
-        ], settings)
+        book = {"book_title": title.strip(), **{key: item[key].strip() for key in ("author", "edition") if (item.get(key) or "").strip()}}
         if is_deleting(wid): return
-        description = description or f"《{title}》是一部值得慢下来阅读的作品。它从人与世界的关系出发，在细节与思考之间，带领读者重新理解选择、成长与生活的意义。"
+        sources = await search_book(book, settings)
+        writer = BroadcastWriter(llm, settings, book, lambda: is_deleting(wid), sources)
+        analysis = await writer.research()
+        description = analysis.get("description") or f"《{title}》的阅读分享。"
         save(wid, step=2, progress=24, payload_update={"description": description})
 
-        prompts = [p for p in item.get("writing_prompts", []) if p.get("enabled")] or [{"text": "适合短视频口播，真诚、有洞见", "enabled": True}]
+        prompts = [p for p in item.get("writing_prompts", []) if p.get("enabled")] or [{"text": DEFAULT_WRITING_GUIDANCE}]
         originals, polished = [], []
         for i, prompt in enumerate(prompts):
             if is_deleting(wid): return
-            raw = await llm([
-                {"role": "system", "content": prompt["text"]},
-                {"role": "user", "content": share_draft_user_content(title, author, item.get("edition"))},
-            ], settings)
-            raw = raw or demo_copy(title, author, prompt["text"], i)
-            originals.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": raw})
-            improved = await llm([
-                {"role": "system", "content": "按 Humanizer-zh 的目标优化中文：去除AI腔、空泛排比和过度总结，保留事实和观点，口语自然。只输出优化稿。"},
-                {"role": "user", "content": raw},
-            ], settings)
-            if is_deleting(wid): return
-            polished.append({"id": f"draft-{i+1}", "prompt": prompt["text"], "text": improved or raw.replace("真正动人的地方", "我最喜欢的是")})
-        save(wid, step=3, progress=45, payload_update={"original_drafts": originals, "polished_drafts": polished})
+            if analysis:
+                raw, final, score = await writer.write(analysis, prompt)
+            else:
+                raw = final = demo_copy(title, author)
+                score = None
+            draft = {"id": f"draft-{i+1}", "prompt": prompt["text"], "prompt_name": prompt.get("name")}
+            originals.append({**draft, "text": raw})
+            polished.append({**draft, "text": final, "review_score": score})
+            save(wid, progress=24 + int(21 * len(polished) / len(prompts)))
 
-        save(wid, step=4, progress=48)
+        save(wid, step=3, progress=48, payload_update={"original_drafts": originals, "polished_drafts": polished})
         voices = item.get("voices") or settings.get("voices") or ["zh-CN-XiaoxiaoNeural"]
         speech_rate, background_music, audio_items = item.get("speech_rate", settings.get("speech_rate", 0)), item.get("background_music"), []
         for di, draft in enumerate(polished):
@@ -96,11 +82,11 @@ async def execute_workflow(
                 if is_deleting(wid): return
                 base = output_dir / f"draft-{di+1}-voice-{vi+1}"
                 target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
-                used_real_speech = await speech(draft["text"], voice, speech_rate, settings, target, background_music, item.get("background_music_volume", .2), item.get("background_music_fade_in", 2), item.get("background_music_fade_out", 2))
+                real_audio = await speech(draft["text"], voice, speech_rate, settings, target, background_music, item.get("background_music_volume", .2), item.get("background_music_fade_in", 2), item.get("background_music_fade_out", 2))
                 if is_deleting(wid): return
-                actual = target if target.exists() else base.with_suffix(".wav")
-                audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{item['output_dir']}/{actual.name}", "provider": "azure" if used_real_speech else "demo"})
-        save(wid, step=5, progress=58, payload_update={"audio": audio_items})
+                actual = real_audio or base.with_suffix(".wav")
+                audio_items.append({"draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate, "url": f"/media/{item['output_dir']}/{actual.name}", "provider": "azure" if real_audio else "demo"})
+        save(wid, step=4, progress=58, payload_update={"audio": audio_items})
 
         draft_text = {draft["id"]: draft["text"] for draft in polished}
         subtitle_items = []
@@ -116,7 +102,7 @@ async def execute_workflow(
                 "json_url": f"/media/{item['output_dir']}/{narration.with_suffix('.json').name}",
             })
             save(wid, progress=58 + int(10 * len(subtitle_items) / len(audio_items)), payload_update={"subtitles": subtitle_items})
-        save(wid, step=6, progress=68, payload_update={"subtitles": subtitle_items})
+        save(wid, step=5, progress=68, payload_update={"subtitles": subtitle_items})
 
         share_text = "\n\n---\n\n".join(draft["text"] for draft in polished)
         taxonomy_raw = await llm([
@@ -125,7 +111,7 @@ async def execute_workflow(
         ], settings, "标签话题生成")
         if is_deleting(wid): return
         tags, topics = generated_taxonomy(taxonomy_raw, title)
-        save(wid, step=7, progress=76, payload_update={"tags": tags, "topics": topics})
+        save(wid, step=6, progress=76, payload_update={"tags": tags, "topics": topics})
 
         if item.get("local_cover", False):
             covers = await asyncio.to_thread(generate_local_covers, output_dir, title, author)
@@ -141,7 +127,7 @@ async def execute_workflow(
                     used_real_image, resolution = await generate_cover(path, title, author, description, prompt["text"], cover_index - 1, image_ratio, settings)
                     if is_deleting(wid): return
                     covers.append({"prompt_id": prompt.get("id"), "prompt_name": prompt.get("name", f"封面提示词 {cover_index}"), "prompt": prompt["text"], "image_ratio": image_ratio, "resolution": resolution, "url": f"/media/{item['output_dir']}/{path.name}", "provider": "openai_compatible" if used_real_image else "local"})
-        save(wid, step=8, progress=88, payload_update={"covers": covers})
+        save(wid, step=7, progress=88, payload_update={"covers": covers})
 
         videos = await compose_videos(
             wid, item, settings, output_dir, covers, audio_items, description=description,
@@ -151,7 +137,9 @@ async def execute_workflow(
         )
         if videos is None:
             return
-        save(wid, status="completed", step=8, progress=100, payload_update={"videos": videos, "subtitles": subtitle_items, "covers": covers})
+        save(wid, status="completed", step=7, progress=100, payload_update={"videos": videos, "subtitles": subtitle_items, "covers": covers})
+    except WorkflowDeleted:
+        return
     except Exception as exc:
         save(wid, status="failed", payload_update={"error": workflow_failure_message(exc)})
     finally:
@@ -506,14 +494,14 @@ async def regenerate_workflow_audio(
                 return
             base = output_dir / f"draft-{index + 1}-voice-1-{stamp}"
             target = base.with_suffix(audio_extension(settings.get("voice_format", "audio-24khz-48kbitrate-mono-mp3")))
-            used_real_speech = await speech(
+            real_audio = await speech(
                 draft["text"], voice, speech_rate, settings, target, background_music,
                 item.get("background_music_volume", .2), item.get("background_music_fade_in", 2),
                 item.get("background_music_fade_out", 2),
             )
             if is_deleting(wid):
                 return
-            actual = target if target.exists() else base.with_suffix(".wav")
+            actual = real_audio or base.with_suffix(".wav")
             if not actual.is_file() or actual.stat().st_size <= 0:
                 raise RuntimeError("配音生成失败，已保留原来的配音和字幕")
             await asyncio.to_thread(generate_subtitles, actual, draft.get("text", ""), subtitle_language(voice))
@@ -525,7 +513,7 @@ async def regenerate_workflow_audio(
             audio_items.append({
                 "draft_id": draft["id"], "voice": voice, "speech_rate": speech_rate,
                 "url": f"/media/{item['output_dir']}/{actual.name}",
-                "provider": "azure" if used_real_speech else "demo",
+                "provider": "azure" if real_audio else "demo",
             })
             subtitle_items.append({
                 "draft_id": draft["id"], "voice": voice,

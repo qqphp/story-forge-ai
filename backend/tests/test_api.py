@@ -2,6 +2,8 @@ import tempfile
 import asyncio
 import base64
 import io
+import json
+import os
 import unittest
 import xml.etree.ElementTree as ET
 import httpx
@@ -15,10 +17,26 @@ from fastapi.staticfiles import StaticFiles
 
 import backend.main as main
 from backend.modules.workflows import executor
+from backend.modules.workflows.broadcast import DEFAULT_WRITING_GUIDANCE, DEFAULT_WRITING_ID, PREVIOUS_WRITING_GUIDANCE, STAGES
+
+
+def broadcast_reply(messages, script="简短内容", description="一部关于选择的小说。"):
+    system = messages[0]["content"]
+    if system.endswith(STAGES["research"][2]):
+        return json.dumps({"match_status": "identified", "author": "", "description": description,
+                           "evidence": [], "interpretations": [], "unknowns": []})
+    if system.endswith(STAGES["plan"][2]):
+        return '{"theme":"选择","sections":[]}'
+    if system.endswith(STAGES["review"][2]):
+        return '{"score":90,"critical_issues":[],"suggestions":[],"revision_stage":"none"}'
+    return script
 
 
 class StoryForgeApiTests(unittest.TestCase):
     def setUp(self):
+        env = patch.dict(os.environ, {"FIRECRAWL_API_KEY": ""})
+        env.start()
+        self.addCleanup(env.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(main, "DB_PATH", Path(self.temp.name) / "test.db")
         self.media_patch = patch.object(main, "MEDIA", Path(self.temp.name) / "media")
@@ -416,15 +434,11 @@ class StoryForgeApiTests(unittest.TestCase):
         async def fake_llm(messages, _settings, request_type="文稿生成"):
             if request_type == "标签话题生成":
                 return '{"tags":["古典文学","神魔小说","人物成长","名著阅读","团队协作","东方想象"],"topics":["西游记","读书","好书推荐","名著解读","读书分享","经典文学"]}'
-            if "书籍简介" in messages[0]["content"]:
-                return "一部讲述取经团队历经考验、坚持理想的古典小说。"
-            if "Humanizer-zh" in messages[0]["content"]:
-                return "这是一篇更自然的《西游记》分享稿。"
-            return "这是一篇《西游记》分享稿。"
+            return broadcast_reply(messages, script="这是一篇《西游记》分享稿。")
 
         async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
             target.write_bytes(b"audio")
-            return False
+            return target
 
         def fake_subtitles(audio_path, text, _language):
             from backend.integrations.subtitles import write_subtitle_files
@@ -444,7 +458,8 @@ class StoryForgeApiTests(unittest.TestCase):
              patch.object(executor.subprocess, "run", return_value=FinishedVideo()):
             asyncio.run(main.process_workflow(workflow_id))
         workflow = self.client.get(f"/api/workflows/{workflow_id}").json()
-        self.assertEqual(workflow["step"], 8)
+        self.assertEqual(workflow["step"], 7)
+        self.assertEqual(workflow["polished_drafts"][0]["review_score"], 90)
         self.assertEqual(workflow["status"], "completed")
         self.assertEqual(len(workflow["subtitles"]), len(workflow["audio"]))
         self.assertTrue(workflow["subtitles"][0]["srt_url"].endswith(".srt"))
@@ -462,12 +477,12 @@ class StoryForgeApiTests(unittest.TestCase):
             created = self.client.post("/api/workflows", json={"book_title": "无封面模板测试"})
         workflow_id = created.json()["id"]
 
-        async def fake_llm(*_args, **_kwargs):
-            return "简短内容"
+        async def fake_llm(messages, *_args):
+            return broadcast_reply(messages)
 
         async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
             target.write_bytes(b"audio")
-            return False
+            return target
 
         def fake_subtitles(audio_path, text, _language):
             from backend.integrations.subtitles import write_subtitle_files
@@ -496,12 +511,12 @@ class StoryForgeApiTests(unittest.TestCase):
             created = self.client.post("/api/workflows", json={"book_title": "字幕烧录"})
         workflow_id = created.json()["id"]
 
-        async def fake_llm(*_args, **_kwargs):
-            return "简短内容"
+        async def fake_llm(messages, *_args):
+            return broadcast_reply(messages)
 
         async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
             target.write_bytes(b"audio")
-            return False
+            return target
 
         def fake_subtitles(audio_path, text, _language):
             from backend.integrations.subtitles import write_subtitle_files
@@ -547,40 +562,142 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(executor.workflow_failure_message(RuntimeError("封面生成失败")), "封面生成失败")
         self.assertEqual(executor.workflow_failure_message(RuntimeError("   ")), "制作失败：RuntimeError")
 
-    def test_original_draft_request_uses_selected_prompt_and_book_identity_only(self):
+    def test_broadcast_uses_fixed_stages_with_snapshotted_book_and_template(self):
         writing = self.client.post("/api/prompts", json={
-            "kind": "writing", "name": "口播结构", "text": "用第一人称讲一个具体场景，控制在四百字内。",
+            "kind": "writing", "name": "口播结构", "text": "用第一人称讲一个具体场景。", "duration_minutes": 5,
         }).json()
         calls = []
+        sources = [{"id": "1", "url": "https://publisher.example/book", "excerpt": "作品简介", "title": "出版社目录"}]
 
         async def fake_llm(messages, _settings, request_type="文稿生成"):
-            calls.append(messages)
-            if "书籍简介" in messages[0]["content"]:
-                return "一部关于选择的小说。"
-            raise RuntimeError("draft captured")
+            key = next(key for key, (_, _, instruction) in STAGES.items() if messages[0]["content"].endswith(instruction))
+            data = json.loads(messages[1]["content"])
+            self.assertIn("小琳爱读书的365天", messages[0]["content"])
+            calls.append((key, data))
+            if key == "research":
+                reply = json.loads(broadcast_reply(messages))
+                reply.update(unknowns=["没有具体版本的正文可供核对"], evidence=[{"point": "作品讨论了选择。", "source_ids": ["1"]}])
+                return json.dumps(reply, ensure_ascii=False)
+            if key == "review":
+                self.assertTrue(data["research"]["unknowns"])
+                if len([stage for stage, _ in calls if stage == key]) == 1:
+                    return broadcast_reply(messages)
+                self.assertEqual(data["script"], "最后交付的正文。")
+            if key == "tts":
+                return "最后交付的正文。" if data.get("review_feedback") else "没有具体版本的正文可供核对。待审核正文。"
+            return broadcast_reply(messages)
 
         def run(payload):
             calls.clear()
             with patch.object(main, "process_workflow"):
                 created = self.client.post("/api/workflows", json=payload)
-            with patch.object(main, "llm", side_effect=fake_llm):
+            with patch.object(main, "search_book", AsyncMock(return_value=sources)) as search, \
+                 patch.object(main, "llm", side_effect=fake_llm), patch.object(main, "speech", AsyncMock(side_effect=RuntimeError("draft captured"))) as speech:
                 asyncio.run(main.process_workflow(created.json()["id"]))
-            return calls
+            search.assert_awaited_once()
+            speech.assert_awaited_once()
+            self.assertEqual(speech.await_args.args[0], "最后交付的正文。")
+            return self.client.get(f"/api/workflows/{created.json()['id']}").json()
 
         full = run({
             "book_title": "百年孤独", "author": "加西亚·马尔克斯", "edition": "精装纪念版",
-            "writing_prompt_ids": [writing["id"]],
+            "writing_prompt_ids": [writing["id"]], "source_notes": "第一章的读书笔记",
         })
-        self.assertEqual(full[0][0]["content"], "你是严谨的中文图书编辑。只输出160个字以内的书籍简介，不虚构具体事实。")
-        self.assertEqual(full[1], [
-            {"role": "system", "content": "用第一人称讲一个具体场景，控制在四百字内。"},
-            {"role": "user", "content": "书名：百年孤独\n作者：加西亚·马尔克斯\n版本：精装纪念版"},
-        ])
+        self.assertEqual(full["step"], 3)
+        self.assertNotIn("source_notes", full)
+        self.assertEqual(full["writing_prompts"][0]["duration_minutes"], 5)
+        self.assertEqual([key for key, _ in calls], [*STAGES, "edit", "tts", "review"])
+        self.assertEqual(calls[0][1]["book"], {"book_title": "百年孤独", "author": "加西亚·马尔克斯", "edition": "精装纪念版"})
+        self.assertEqual(calls[0][1]["web_sources"], sources)
+        self.assertEqual(calls[2][1]["research"]["evidence"], ["作品讨论了选择。"])
+        self.assertNotIn("unknowns", calls[2][1]["research"])
+        self.assertEqual(calls[2][1]["template_preferences"], writing["text"])
+        self.assertIn("5 分钟", calls[2][1]["length_requirement"])
+        self.assertEqual(full["polished_drafts"][0]["text"], "最后交付的正文。")
 
-        title_only = run({"book_title": "活着", "writing_prompt_ids": [writing["id"]]})
-        self.assertEqual(title_only[1][1]["content"], "书名：活着")
-        self.assertNotIn("简介", title_only[1][1]["content"])
-        self.assertNotIn("额外要求", title_only[1][1]["content"])
+        run({"book_title": "活着", "writing_prompt_ids": [writing["id"]]})
+        self.assertEqual(calls[0][1]["book"], {"book_title": "活着"})
+
+    def test_ambiguous_book_stops_before_writing_and_blank_titles_are_rejected(self):
+        self.assertEqual(self.client.post("/api/workflows", json={"book_title": "  "}).status_code, 422)
+        self.assertEqual(self.client.post("/api/workflows/batch", json={"books": [{"book_title": "  "}]}).status_code, 422)
+        with patch.object(main, "process_workflow"):
+            wid = self.client.post("/api/workflows", json={"book_title": "同名图书"}).json()["id"]
+        response = {"match_status": "ambiguous", "author": "", "description": "", "evidence": [], "interpretations": [], "unknowns": []}
+        with patch.object(main, "llm", AsyncMock(return_value=json.dumps(response))) as llm:
+            asyncio.run(main.process_workflow(wid))
+        llm.assert_awaited_once()
+        workflow = self.client.get(f"/api/workflows/{wid}").json()
+        self.assertEqual((workflow["status"], workflow["step"]), ("failed", 1))
+        self.assertIn("同名书", workflow["error"])
+
+    def test_firecrawl_settings_preserve_environment_and_mask_saved_key(self):
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "example-environment-key"}):
+            form = self.client.get("/api/settings").json()
+            self.assertTrue(form["firecrawl_enabled"])
+            self.assertEqual(form["firecrawl_api_key"], "••••••••")
+            self.assertEqual(self.client.put("/api/settings", json=form).json()["firecrawl_api_key"], "••••••••")
+            with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "rotated-environment-key"}):
+                self.assertEqual(main.get_settings()["firecrawl_api_key"], "rotated-environment-key")
+            saved = self.client.put("/api/settings", json={**form, "firecrawl_enabled": False, "firecrawl_api_key": " example-page-key "}).json()
+            self.assertFalse(saved["firecrawl_enabled"])
+            self.assertEqual(saved["firecrawl_api_key"], "••••••••")
+            self.client.put("/api/settings", json={"speech_rate": -5})
+            self.assertFalse(main.get_settings()["firecrawl_enabled"])
+            self.assertEqual(main.get_settings()["firecrawl_api_key"], "example-page-key")
+            cleared = self.client.put("/api/settings", json={**saved, "firecrawl_api_key": ""})
+            self.assertEqual(cleared.json()["firecrawl_api_key"], "")
+            self.assertEqual(main.get_settings()["firecrawl_api_key"], "")
+
+    def test_firecrawl_logs_bounded_searches_and_falls_back_after_provider_errors(self):
+        book = {"book_title": "昆虫记", "author": "法布尔", "edition": "纪念版"}
+        settings = {"firecrawl_enabled": True, "firecrawl_api_key": "example-firecrawl-key", "text_api_key": "test", "model": "mock"}
+        calls = []
+
+        def respond(request):
+            self.assertEqual(str(request.url), "https://api.firecrawl.dev/v2/search")
+            self.assertEqual(request.headers["Authorization"], "Bearer example-firecrawl-key")
+            params = json.loads(request.content)
+            self.assertEqual(params["query"], '"昆虫记" 法布尔 纪念版 图书 简介')
+            self.assertEqual(params["limit"], 5)
+            self.assertEqual(params["sources"], [{"type": "web"}])
+            calls.append(request)
+            if len(calls) == 1:
+                return httpx.Response(200, json={"success": True, "data": {"web": [
+                    {"title": "图书目录", "url": f"https://publisher.example/{index}", "markdown": "正文 " * 1500}
+                    for index in range(8)
+                ]}})
+            if len(calls) == 2:
+                return httpx.Response(429)
+            raise httpx.ReadTimeout("example timeout")
+
+        for attempt in range(3):
+            client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+            with patch.object(main.httpx, "AsyncClient", return_value=client):
+                sources = asyncio.run(main.search_book(book, settings))
+            if attempt == 0:
+                self.assertEqual(len(sources), 5)
+                self.assertTrue(all(len(page["excerpt"]) == 2000 for page in sources))
+            else:
+                self.assertEqual(sources, [])
+        with patch.object(main.httpx, "AsyncClient") as client:
+            self.assertEqual(asyncio.run(main.search_book(book, {**settings, "firecrawl_enabled": False})), [])
+            client.assert_not_called()
+        logs = self.client.get("/api/request-logs", params={"request_type": "图书资料搜索"}).json()
+        self.assertEqual(logs["total"], 3)
+        self.assertEqual({(row["request_params"]["result_count"], row["request_params"]["status"], row["request_params"]["http_status"])
+                          for row in logs["items"]}, {(5, "ok", 200), (0, "failed", 429), (0, "timeout", None)})
+        self.assertNotIn("example-firecrawl-key", json.dumps(logs))
+
+    def test_migration_updates_only_the_unmodified_builtin_writing_prompt(self):
+        for previous, expected in ((PREVIOUS_WRITING_GUIDANCE, DEFAULT_WRITING_GUIDANCE), ("我的自定义节目", "我的自定义节目")):
+            with self.subTest(previous=previous):
+                with main.db() as conn:
+                    conn.execute("UPDATE prompt_templates SET text=?,duration_minutes=7 WHERE id=?", (previous, DEFAULT_WRITING_ID))
+                    conn.execute("PRAGMA user_version=1")
+                main.init_db()
+                prompt = next(item for item in self.client.get("/api/prompts").json() if item["id"] == DEFAULT_WRITING_ID)
+                self.assertEqual((prompt["text"], prompt["duration_minutes"]), (expected, 7))
 
     def test_workflow_snapshots_selected_prompts(self):
         prompts = self.client.get("/api/prompts").json()
@@ -595,6 +712,38 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(workflow["cover_prompts"][0]["name"], cover["name"])
         self.assertEqual(workflow["voices"], ["zh-CN-YunxiNeural"])
         self.assertEqual(workflow["speech_rate"], 15)
+
+    def test_old_workflow_steps_migrate_once_and_drafts_remain_available(self):
+        with patch.object(main, "process_workflow"):
+            ids = [self.client.post("/api/workflows", json={"book_title": "旧书"}).json()["id"] for _ in range(3)]
+        for wid, step in zip(ids, [3, 4, 8]):
+            main.save_workflow(wid, step=step, payload_update={"polished_drafts": [{"text": "旧稿"}]})
+        with main.db() as conn:
+            conn.execute("DELETE FROM prompt_templates WHERE id='writing-xiaolin'")
+            conn.execute("ALTER TABLE prompt_templates DROP COLUMN duration_minutes")
+            conn.execute("PRAGMA user_version=0")
+        main.init_db()
+        main.init_db()
+        rows = [self.client.get(f"/api/workflows/{wid}").json() for wid in ids]
+        self.assertEqual([row["step"] for row in rows], [2, 3, 7])
+        self.assertTrue(all(row["polished_drafts"] == [{"text": "旧稿"}] for row in rows))
+        pipeline = self.client.get("/api/prompts/writing-pipeline").json()
+        self.assertEqual([stage["id"] for stage in pipeline["stages"]], list(STAGES))
+
+    def test_twice_rejected_script_stops_at_writing_without_calling_speech(self):
+        async def fake_llm(messages, *_args):
+            if messages[0]["content"].endswith(STAGES["review"][2]):
+                return '{"score":84,"critical_issues":["引文没有依据"],"suggestions":[],"revision_stage":"draft"}'
+            return broadcast_reply(messages)
+
+        with patch.object(main, "process_workflow"):
+            wid = self.client.post("/api/workflows", json={"book_title": "审核测试"}).json()["id"]
+        with patch.object(main, "llm", side_effect=fake_llm), patch.object(main, "speech", AsyncMock()) as speech:
+            asyncio.run(main.process_workflow(wid))
+        speech.assert_not_awaited()
+        workflow = self.client.get(f"/api/workflows/{wid}").json()
+        self.assertEqual((workflow["status"], workflow["step"]), ("failed", 2))
+        self.assertIn("引文没有依据", workflow["error"])
 
     def test_workflow_snapshots_background_music_mix(self):
         music = self.client.post("/api/background-music", json={"name": "夜读", "url": "https://example.com/night.mp3", "category": "安静"}).json()
@@ -787,12 +936,12 @@ class StoryForgeApiTests(unittest.TestCase):
             created = self.client.post("/api/workflows", json={"book_title": title})
         workflow_id = created.json()["id"]
 
-        async def fake_llm(*_args, **_kwargs):
-            return "简短内容"
+        async def fake_llm(messages, *_args):
+            return broadcast_reply(messages)
 
         async def fake_speech(_text, _voice, _rate, _settings, target, *_args):
             target.write_bytes(b"audio-bytes")
-            return False
+            return target
 
         def fake_subtitles(audio_path, text, _language):
             from backend.integrations.subtitles import write_subtitle_files
@@ -821,6 +970,77 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(workflow["status"], "completed", workflow.get("error"))
         self.assertTrue(workflow["videos"])
         return workflow
+
+    def _cover_workflow(self):
+        with patch.object(main, "process_workflow"):
+            wid = self.client.post("/api/workflows", json={"book_title": "旧作品", "author": "作者"}).json()["id"]
+        item = self.client.get(f"/api/workflows/{wid}").json()
+        output = main.MEDIA / item["output_dir"]
+        covers = [{"url": f"/media/{output.name}/cover-1.png", "image_ratio": "1:1", "provider": "local_template", "template_id": "literary-square"},
+                  {"url": f"/media/{output.name}/cover-2.png", "image_ratio": "16:9", "provider": "openai_compatible", "prompt": "原记录的创作提示词"}]
+        for index, size in enumerate(((100, 100), (160, 90)), 1):
+            Image.new("RGB", size, "navy").save(output / f"cover-{index}.png")
+        assets = {"audio": [{"url": f"/media/{output.name}/track.mp3"}], "videos": [{"url": f"/media/{output.name}/video.mp4"}],
+                  "subtitles": [{"srt_url": f"/media/{output.name}/track.srt"}], "polished_drafts": [{"text": "已完成的播讲稿"}]}
+        main.save_workflow(wid, status="completed", step=7, progress=100, payload_update={"covers": covers, **assets})
+        return wid, output, covers, assets
+
+    def test_regenerating_one_legacy_cover_preserves_other_assets(self):
+        wid, output, covers, assets = self._cover_workflow()
+        with patch.object(main, "generate_cover", AsyncMock()) as ai:
+            response = self.client.post(f"/api/workflows/{wid}/regenerate-cover", json={"cover_url": covers[0]["url"]})
+        self.assertEqual(response.status_code, 202)
+        ai.assert_not_called()
+        item = self.client.get(f"/api/workflows/{wid}").json()
+        self.assertIsNone(item["cover_regenerating"])
+        self.assertIsNone(item["cover_error"])
+        self.assertEqual(item["covers"][1], covers[1])
+        first = item["covers"][0]
+        self.assertNotEqual(first["template_id"], covers[0]["template_id"])
+        with Image.open(output / Path(first["url"]).name) as image:
+            self.assertEqual(image.size, (1080, 1080))
+
+        async def generate(path, title, author, description, prompt, index, ratio, settings, *, allow_fallback):
+            self.assertEqual((prompt, ratio, allow_fallback), (covers[1]["prompt"], "16:9", False))
+            Image.new("RGB", (320, 180), "beige").save(path)
+            return True, "320×180"
+
+        with patch.object(main, "generate_cover", side_effect=generate) as ai:
+            response = self.client.post(f"/api/workflows/{wid}/regenerate-cover", json={"cover_url": covers[1]["url"]})
+        self.assertEqual(response.status_code, 202)
+        ai.assert_awaited_once()
+        item = self.client.get(f"/api/workflows/{wid}").json()
+        self.assertEqual(item["covers"][0], first)
+        self.assertNotEqual(item["covers"][1]["url"], covers[1]["url"])
+        self.assertTrue((output / Path(item["covers"][1]["url"]).name).is_file())
+        for key, expected in assets.items():
+            self.assertEqual(item[key], expected)
+
+    def test_cover_regeneration_failure_conflicts_and_restart_keep_old_images(self):
+        wid, output, covers, _ = self._cover_workflow()
+        endpoint = f"/api/workflows/{wid}/regenerate-cover"
+        body = {"cover_url": covers[1]["url"]}
+        files = {path.name: path.read_bytes() for path in output.iterdir()}
+        with patch.object(main, "generate_cover", AsyncMock(side_effect=RuntimeError("图片服务失败"))):
+            self.assertEqual(self.client.post(endpoint, json=body).status_code, 202)
+        after = self.client.get(f"/api/workflows/{wid}").json()
+        self.assertEqual(after["covers"], covers)
+        self.assertEqual(after["cover_error"], {"cover_url": body["cover_url"], "message": "图片服务失败"})
+        self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, files)
+        self.assertEqual(self.client.post(endpoint, json={"cover_url": "/media/other/cover.png"}).status_code, 404)
+
+        with patch.object(main, "process_cover_regeneration", AsyncMock()):
+            self.assertEqual(self.client.post(endpoint, json=body).status_code, 202)
+            self.assertEqual(self.client.post(endpoint, json={"cover_url": covers[0]["url"]}).status_code, 409)
+            self.assertEqual(self.client.post(f"/api/workflows/{wid}/regenerate-video").status_code, 409)
+            self.assertEqual(self.client.post(f"/api/workflows/{wid}/regenerate-audio", json={"voice": "zh-CN-XiaoxiaoNeural"}).status_code, 409)
+            self.assertEqual(self.client.post(f"/api/workflows/{wid}/retry").status_code, 409)
+        main.release_interrupted_video_regenerations(main.db)
+        current = self.client.get(f"/api/workflows/{wid}").json()
+        self.assertIsNone(current["cover_regenerating"])
+        self.assertEqual(current["cover_error"]["cover_url"], body["cover_url"])
+        self.assertIn("中断", current["cover_error"]["message"])
+        self.assertEqual(current["covers"], covers)
 
     def test_completed_workflow_regenerates_video_from_current_settings_only(self):
         before = self._completed_workflow("按设置重合成")
@@ -1049,7 +1269,7 @@ class StoryForgeApiTests(unittest.TestCase):
         async def fake_speech(text, voice, rate, _settings, target, *_args):
             speech_calls.append((text, voice, rate))
             target.write_bytes(b"new-audio")
-            return True
+            return target
 
         def fake_subtitles(audio_path, _text, language):
             self.assertEqual(language, "en")

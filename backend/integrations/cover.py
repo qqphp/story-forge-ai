@@ -49,6 +49,8 @@ async def generate_cover(
     log_request: Callable[[str, str, dict[str, Any]], None],
     client_factory: Callable[..., Any],
     fallback: Callable[[Path, str, str, int], None] = make_local_cover,
+    *,
+    allow_fallback: bool = True,
 ) -> tuple[bool, str]:
     """Use an OpenAI-compatible endpoint, falling back to a local cover."""
     if settings.get("image_api_key") and settings.get("image_model"):
@@ -92,8 +94,11 @@ async def generate_cover(
                 path.write_bytes(raw)
                 with Image.open(path) as generated:
                     return True, f"{generated.width}×{generated.height}"
-        except Exception:
-            pass
+        except Exception as exc:
+            if not allow_fallback:
+                raise RuntimeError("图片服务生成失败，请检查模型配置和请求日志后重试") from exc
+    elif not allow_fallback:
+        raise RuntimeError("请先在模型配置中填写图片服务密钥并选择模型")
     from backend.integrations.local_covers import render_local_cover
     render_local_cover(path, title, author, image_ratio if image_ratio in ("1:1", "16:9", "9:16") else "9:16", index % 6)
     with Image.open(path) as generated:

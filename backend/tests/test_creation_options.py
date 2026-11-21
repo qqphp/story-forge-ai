@@ -97,12 +97,13 @@ class CreationOptionsTests(unittest.TestCase):
 
         async def speech(_text, _voice, _rate, _settings, path, *_args):
             path.write_bytes(b"audio")
-            return True
+            return path
 
         def subtitles(path, text, _language):
             return write_subtitle_files(path, [{"start": 0, "end": 1, "text": text}])
 
-        with patch.object(main, "llm", AsyncMock(return_value="书籍分享稿")), \
+        with patch.object(main, "get_settings", return_value=main.DEFAULT_SETTINGS), \
+             patch.object(main, "llm", AsyncMock(return_value=None)), \
              patch.object(main, "speech", side_effect=speech), \
              patch.object(main, "generate_subtitles", side_effect=subtitles), \
              patch.object(main, "generate_cover", AsyncMock()) as external, \

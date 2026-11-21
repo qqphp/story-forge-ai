@@ -3,6 +3,7 @@ export type PromptTemplate = {
   kind: "writing" | "cover";
   name: string;
   text: string;
+  duration_minutes?: number | null;
   image_sizes?: string[];
 };
 
@@ -22,7 +23,7 @@ export type Asset = {
 };
 export type SubtitleTrack = { draft_id: string; voice: string; srt_url: string; txt_url: string; json_url: string };
 
-export type Draft = { id: string; prompt: string; text: string };
+export type Draft = { id: string; prompt: string; text: string; prompt_name?: string | null; review_score?: number | null };
 export type VoiceItem = {
   short_name: string;
   locale: string;
@@ -48,12 +49,13 @@ export type SubtitleStyle = {
 };
 export type RequestLog = { id: number; request_type: string; request_url: string; request_params: Record<string, unknown>; created_at: number };
 export type WorkspacePage = "workspace" | "prompts" | "models" | "voice" | "video" | "logs";
-export type AppSettings = { background_blur_enabled: boolean; background_blur_strength: number; background_overlay_enabled: boolean; background_overlay_opacity: number; record_label_image_id?: string | null; text_api_base: string; text_api_key: string; image_api_base: string; image_api_key: string; model: string; image_model: string; azure_speech_key: string; azure_speech_base: string; voice_format: string; voices: string[]; speech_rate: number; video_orientation: "landscape" | "portrait"; burn_subtitles: boolean; subtitle_style: SubtitleStyle; video_generation_method: "local" | "stock"; stock_video_provider: "pexels" | "pixabay"; pexels_api_base: string; pexels_api_key: string; pixabay_api_base: string; pixabay_api_key: string };
+export type AppSettings = { background_blur_enabled: boolean; background_blur_strength: number; background_overlay_enabled: boolean; background_overlay_opacity: number; record_label_image_id?: string | null; text_api_base: string; text_api_key: string; image_api_base: string; image_api_key: string; model: string; image_model: string; firecrawl_enabled: boolean; firecrawl_api_key: string; azure_speech_key: string; azure_speech_base: string; voice_format: string; voices: string[]; speech_rate: number; video_orientation: "landscape" | "portrait"; burn_subtitles: boolean; subtitle_style: SubtitleStyle; video_generation_method: "local" | "stock"; stock_video_provider: "pexels" | "pixabay"; pexels_api_base: string; pexels_api_key: string; pixabay_api_base: string; pixabay_api_key: string };
 export type Workflow = {
   local_cover?: boolean;
   id: string; book_title: string; author: string; edition: string; status: string;
   step: number; progress: number; created_at: number; updated_at?: number; description?: string; error?: string;
   video_regenerating?: boolean; video_error?: string;
   audio_regenerating?: boolean; audio_error?: string;
+  cover_regenerating?: { cover_url: string } | null; cover_error?: { cover_url: string; message: string } | null;
   output_dir?: string; tags?: string[]; topics?: string[]; original_drafts?: Draft[]; polished_drafts?: Draft[]; covers?: Asset[]; audio?: Asset[]; subtitles?: SubtitleTrack[]; videos?: Asset[]; cover_prompts?: PromptTemplate[];
 };

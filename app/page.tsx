@@ -13,11 +13,20 @@ import { VoiceCenter } from "@/app/features/voices/VoiceCenter";
 import { normalizeVoiceItem } from "@/app/features/voices/voice-catalog";
 import { useMusicSelection } from "@/app/features/workflows/useMusicSelection";
 import { SubtitleSettings } from "@/app/features/settings/SubtitleSettings";
-const stages = ["理解书籍", "撰写文案", "自然化优化", "生成配音", "生成字幕", "生成标签和话题", "创作封面", "合成视频"];
+const stages = ["理解书籍", "文案撰写", "生成配音", "生成字幕", "生成标签和话题", "创作封面", "合成视频"];
+const fallbackTemplates: PromptTemplate[] = [
+  {id:"writing-xiaolin",kind:"writing",name:"小琳爱读书的365天",text:"从生活场景切入，分享读书后的理解与思考。"},
+  {id:"cover-literary",kind:"cover",name:"文学质感",text:"克制的文学感，竖版构图，无文字"},
+];
+
+function defaultTemplateIds(items: PromptTemplate[]) {
+  const writing = items.find(item => item.id === "writing-xiaolin") ?? items.find(item => item.kind === "writing");
+  return [...(writing ? [writing.id] : []), ...items.filter(item => item.kind === "cover").map(item => item.id)];
+}
 
 const seedTasks: Workflow[] = [
   { id: "sample-1", book_title: "悉达多", author: "赫尔曼·黑塞", edition: "", status: "completed", step: 7, progress: 100, created_at: 1787364000, description: "一个关于寻找、经历与自我抵达的故事。", tags: ["文学","成长"], topics: ["读书","好书推荐"], original_drafts: [], polished_drafts: [], covers: [], audio: [], videos: [] },
-  { id: "sample-2", book_title: "局外人", author: "阿尔贝·加缪", edition: "上海译文版", status: "running", step: 4, progress: 68, created_at: 1787369400, description: "", original_drafts: [], polished_drafts: [], covers: [], audio: [], videos: [] },
+  { id: "sample-2", book_title: "局外人", author: "阿尔贝·加缪", edition: "上海译文版", status: "running", step: 5, progress: 68, created_at: 1787369400, description: "", original_drafts: [], polished_drafts: [], covers: [], audio: [], videos: [] },
 ];
 
 export default function Home() {
@@ -145,7 +154,7 @@ export default function Home() {
 
       {showCreate && <CreateDialog connected={connected} onClose={() => setShowCreate(false)} onSubmit={createWorkflow} />}
       {showBatch && <BatchCreateDialog connected={connected} onClose={()=>setShowBatch(false)} onSubmit={createBatch}/>}
-      {selected && <DetailPanel key={selected.id} task={selected} onClose={() => setSelected(null)} onRetry={async () => { await fetch(`${API}/api/workflows/${selected.id}/retry`, {method:"POST"}); setToast("已重新开始制作"); }} onDelete={async()=>{const res=await fetch(`${API}/api/workflows/${selected.id}`,{method:"DELETE"});if(!res.ok)throw new Error("删除失败");setSelected(null);setToast("作品及相关产物已删除");await loadTasks();}} onRegenerateVideo={async()=>{if(!connected)throw new Error("请先连接服务后再重新生成视频");const res=await fetch(`${API}/api/workflows/${selected.id}/regenerate-video`,{method:"POST"});if(!res.ok){const data=await res.json().catch(()=>({}));const detail=data.detail;throw new Error(typeof detail==="string"?detail:"重新生成失败，请稍后重试")}setToast("已按当前视频设置开始重新生成");await loadTasks();}} onRegenerateAudio={async(voice)=>{if(!connected)throw new Error("请先连接服务后再重新生成配音");const res=await fetch(`${API}/api/workflows/${selected.id}/regenerate-audio`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({voice})});if(!res.ok){const data=await res.json().catch(()=>({}));const detail=data.detail;throw new Error(typeof detail==="string"?detail:"重新生成配音失败，请稍后重试")}setToast("已开始重新生成配音和字幕");await loadTasks();}} />}
+      {selected && <DetailPanel key={selected.id} task={selected} onClose={() => setSelected(null)} onRetry={async () => { await fetch(`${API}/api/workflows/${selected.id}/retry`, {method:"POST"}); setToast("已重新开始制作"); }} onDelete={async()=>{const res=await fetch(`${API}/api/workflows/${selected.id}`,{method:"DELETE"});if(!res.ok)throw new Error("删除失败");setSelected(null);setToast("作品及相关产物已删除");await loadTasks();}} onRegenerateVideo={async()=>{if(!connected)throw new Error("请先连接服务后再重新生成视频");const res=await fetch(`${API}/api/workflows/${selected.id}/regenerate-video`,{method:"POST"});if(!res.ok){const data=await res.json().catch(()=>({}));const detail=data.detail;throw new Error(typeof detail==="string"?detail:"重新生成失败，请稍后重试")}setToast("已按当前视频设置开始重新生成");await loadTasks();}} onRegenerateAudio={async(voice)=>{if(!connected)throw new Error("请先连接服务后再重新生成配音");const res=await fetch(`${API}/api/workflows/${selected.id}/regenerate-audio`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({voice})});if(!res.ok){const data=await res.json().catch(()=>({}));const detail=data.detail;throw new Error(typeof detail==="string"?detail:"重新生成配音失败，请稍后重试")}setToast("已开始重新生成配音和字幕");await loadTasks();}} onRegenerateCover={async(coverUrl)=>{if(!connected)throw new Error("请先连接服务后再重新生成封面");const res=await fetch(`${API}/api/workflows/${selected.id}/regenerate-cover`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cover_url:coverUrl})});if(!res.ok){const data=await res.json().catch(()=>({}));throw new Error(typeof data.detail==="string"?data.detail:"重新生成封面失败，请稍后重试")}setToast("已提交这张封面的生成任务");await loadTasks();}} />}
       {toast && <div className="toast" role="status" onAnimationEnd={() => setToast("")}>{toast}</div>}
       </section>
     </main>
@@ -154,14 +163,13 @@ export default function Home() {
 
 function CreateDialog({ connected, onClose, onSubmit }: { connected: boolean; onClose: () => void; onSubmit: (data: Record<string, unknown>) => Promise<void> }) {
   const [title, setTitle] = useState(""); const [author, setAuthor] = useState(""); const [edition, setEdition] = useState("");
-  const fallback: PromptTemplate[] = [{id:"writing-short-video",kind:"writing",name:"短视频口播",text:"适合 2 分钟短视频口播，有真实阅读感受"},{id:"writing-insight",kind:"writing",name:"反常识洞见",text:"从一个反常识观点切入，避免剧透"},{id:"cover-literary",kind:"cover",name:"文学质感",text:"克制的文学感，竖版构图，无文字"}];
-  const [templates, setTemplates] = useState<PromptTemplate[]>(fallback);
-  const [selectedIds, setSelectedIds] = useState<string[]>(fallback.map(x=>x.id));
+  const [templates, setTemplates] = useState(fallbackTemplates);
+  const [selectedIds, setSelectedIds] = useState(() => defaultTemplateIds(fallbackTemplates));
   const [voiceList,setVoiceList]=useState<string[]>(["zh-CN-XiaoxiaoNeural","zh-CN-YunxiNeural","zh-CN-XiaoyiNeural"]);
   const [voice,setVoice]=useState("zh-CN-XiaoxiaoNeural"); const [speechRate,setSpeechRate]=useState(0);
   const {music,musicId,setMusicId,musicLoading}=useMusicSelection(connected); const [localCover,setLocalCover]=useState(false); const [musicVolume,setMusicVolume]=useState(0.1); const [fadeIn,setFadeIn]=useState(3); const [fadeOut,setFadeOut]=useState(3);
   const [busy, setBusy] = useState(false);
-  useEffect(()=>{if(connected){fetch(`${API}/api/prompts`).then(r=>r.json()).then((items:PromptTemplate[])=>{setTemplates(items);setSelectedIds(items.map(x=>x.id));}).catch(()=>{});fetch(`${API}/api/settings`).then(r=>r.json()).then(settings=>{setVoice(settings.voices?.[0]||"zh-CN-XiaoxiaoNeural");setSpeechRate(settings.speech_rate??0)}).catch(()=>{});fetch(`${API}/api/voices`).then(r=>r.json()).then(data=>setVoiceList(data.voices)).catch(()=>{});}},[connected]);
+  useEffect(()=>{if(connected){fetch(`${API}/api/prompts`).then(r=>r.json()).then((items:PromptTemplate[])=>{setTemplates(items);setSelectedIds(defaultTemplateIds(items));}).catch(()=>{});fetch(`${API}/api/settings`).then(r=>r.json()).then(settings=>{setVoice(settings.voices?.[0]||"zh-CN-XiaoxiaoNeural");setSpeechRate(settings.speech_rate??0)}).catch(()=>{});fetch(`${API}/api/voices`).then(r=>r.json()).then(data=>setVoiceList(data.voices)).catch(()=>{});}},[connected]);
   const submit = async (e: FormEvent) => { e.preventDefault(); if (!title.trim()) return; setBusy(true); try { await onSubmit({book_title:title.trim(),author:author.trim(),edition:edition.trim(),writing_prompt_ids:templates.filter(x=>x.kind==="writing"&&selectedIds.includes(x.id)).map(x=>x.id),local_cover:localCover,cover_prompt_ids:templates.filter(x=>x.kind==="cover"&&selectedIds.includes(x.id)).map(x=>x.id),voice,speech_rate:speechRate,background_music_id:musicId||null,background_music_volume:musicVolume,background_music_fade_in:fadeIn,background_music_fade_out:fadeOut}); } finally { setBusy(false); } };
   return <div className="modal-backdrop" role="presentation" onMouseDown={e => e.target === e.currentTarget && onClose()}><form className="modal config-modal create-modal" onSubmit={submit}>
     <div className="modal-head"><div><p className="eyebrow">新建工作流</p><h2>从哪一本书开始？</h2></div><button type="button" className="close" onClick={onClose}>×</button></div>
@@ -175,14 +183,13 @@ function CreateDialog({ connected, onClose, onSubmit }: { connected: boolean; on
 }
 
 function MusicMixControl({musicLoading,music,musicId,setMusicId,volume,setVolume,fadeIn,setFadeIn,fadeOut,setFadeOut}:{musicLoading:boolean;music:BackgroundMusic[];musicId:string;setMusicId:(id:string)=>void;volume:number;setVolume:(value:number)=>void;fadeIn:number;setFadeIn:(value:number)=>void;fadeOut:number;setFadeOut:(value:number)=>void}) {
-  return <section className="workflow-music"><div><h3>背景音乐</h3><p>选填，通过微软 SSML 与配音同时合成</p></div><label>选择背景音乐<select disabled={musicLoading} value={musicId} onChange={e=>setMusicId(e.target.value)}><option value="">不使用背景音乐</option>{music.map(item=><option key={item.id} value={item.id}>{item.name}{item.category?` · ${item.category}`:""}</option>)}</select></label>{musicId&&<div className="music-mix-grid"><label><span>音量 <b>{volume.toFixed(2)}</b></span><input type="range" min="0" max="1" step="0.05" value={volume} onChange={e=>setVolume(Number(e.target.value))}/></label><label><span>淡入时间 <b>{fadeIn} 秒</b></span><input type="range" min="0" max="10" step="0.5" value={fadeIn} onChange={e=>setFadeIn(Number(e.target.value))}/></label><label><span>淡出时间 <b>{fadeOut} 秒</b></span><input type="range" min="0" max="10" step="0.5" value={fadeOut} onChange={e=>setFadeOut(Number(e.target.value))}/></label></div>}</section>;
+  return <section className="workflow-music"><div><h3>背景音乐</h3><p>选填，背景音乐会从节目开头持续到结尾</p></div><label>选择背景音乐<select disabled={musicLoading} value={musicId} onChange={e=>setMusicId(e.target.value)}><option value="">不使用背景音乐</option>{music.map(item=><option key={item.id} value={item.id}>{item.name}{item.category?` · ${item.category}`:""}</option>)}</select></label>{musicId&&<div className="music-mix-grid"><label><span>音量 <b>{volume.toFixed(2)}</b></span><input type="range" min="0" max="1" step="0.05" value={volume} onChange={e=>setVolume(Number(e.target.value))}/></label><label><span>淡入时间 <b>{fadeIn} 秒</b></span><input type="range" min="0" max="10" step="0.5" value={fadeIn} onChange={e=>setFadeIn(Number(e.target.value))}/></label><label><span>淡出时间 <b>{fadeOut} 秒</b></span><input type="range" min="0" max="10" step="0.5" value={fadeOut} onChange={e=>setFadeOut(Number(e.target.value))}/></label></div>}</section>;
 }
 
 function BatchCreateDialog({connected,onClose,onSubmit}:{connected:boolean;onClose:()=>void;onSubmit:(data:Record<string,unknown>)=>Promise<void>}) {
   const [step,setStep]=useState(1); const [rows,setRows]=useState(()=>Array.from({length:6},(_,i)=>({id:`row-${i+1}`,book_title:"",author:"",edition:""}))); const [error,setError]=useState(""); const [busy,setBusy]=useState(false);
-  const fallback:PromptTemplate[]=[{id:"writing-short-video",kind:"writing",name:"短视频口播",text:"适合 2 分钟短视频口播，有真实阅读感受"},{id:"writing-insight",kind:"writing",name:"反常识洞见",text:"从一个反常识观点切入，避免剧透"},{id:"cover-literary",kind:"cover",name:"文学质感",text:"克制的文学感，竖版构图，无文字"}];
-  const [templates,setTemplates]=useState<PromptTemplate[]>(fallback);const [selectedIds,setSelectedIds]=useState<string[]>(fallback.map(x=>x.id));const [voiceList,setVoiceList]=useState<string[]>(["zh-CN-XiaoxiaoNeural","zh-CN-YunxiNeural"]);const [voice,setVoice]=useState("zh-CN-XiaoxiaoNeural");const [speechRate,setSpeechRate]=useState(0);const {music,musicId,setMusicId,musicLoading}=useMusicSelection(connected);const [localCover,setLocalCover]=useState(false);const [musicVolume,setMusicVolume]=useState(0.1);const [fadeIn,setFadeIn]=useState(3);const [fadeOut,setFadeOut]=useState(3);
-  useEffect(()=>{if(!connected)return;fetch(`${API}/api/prompts`).then(r=>r.json()).then((items:PromptTemplate[])=>{setTemplates(items);setSelectedIds(items.map(x=>x.id))}).catch(()=>{});fetch(`${API}/api/settings`).then(r=>r.json()).then(settings=>{setVoice(settings.voices?.[0]||"zh-CN-XiaoxiaoNeural");setSpeechRate(settings.speech_rate??0)}).catch(()=>{});fetch(`${API}/api/voices`).then(r=>r.json()).then(data=>setVoiceList(data.voices)).catch(()=>{});},[connected]);
+  const [templates,setTemplates]=useState(fallbackTemplates);const [selectedIds,setSelectedIds]=useState(()=>defaultTemplateIds(fallbackTemplates));const [voiceList,setVoiceList]=useState<string[]>(["zh-CN-XiaoxiaoNeural","zh-CN-YunxiNeural"]);const [voice,setVoice]=useState("zh-CN-XiaoxiaoNeural");const [speechRate,setSpeechRate]=useState(0);const {music,musicId,setMusicId,musicLoading}=useMusicSelection(connected);const [localCover,setLocalCover]=useState(false);const [musicVolume,setMusicVolume]=useState(0.1);const [fadeIn,setFadeIn]=useState(3);const [fadeOut,setFadeOut]=useState(3);
+  useEffect(()=>{if(!connected)return;fetch(`${API}/api/prompts`).then(r=>r.json()).then((items:PromptTemplate[])=>{setTemplates(items);setSelectedIds(defaultTemplateIds(items))}).catch(()=>{});fetch(`${API}/api/settings`).then(r=>r.json()).then(settings=>{setVoice(settings.voices?.[0]||"zh-CN-XiaoxiaoNeural");setSpeechRate(settings.speech_rate??0)}).catch(()=>{});fetch(`${API}/api/voices`).then(r=>r.json()).then(data=>setVoiceList(data.voices)).catch(()=>{});},[connected]);
   const usedRows=rows.filter(row=>row.book_title.trim()||row.author.trim()||row.edition.trim());
   const updateRow=(id:string,field:"book_title"|"author"|"edition",value:string)=>setRows(items=>items.map(row=>row.id===id?{...row,[field]:value}:row));
   const next=()=>{if(!usedRows.length){setError("请至少填写一本书");return;}if(usedRows.some(row=>!row.book_title.trim())){setError("已填写的每一行都需要书籍名称");return;}setError("");setStep(2)};
@@ -200,16 +207,53 @@ function ImageSizePicker({value,onChange}:{value:string[];onChange:(value:string
   return <fieldset className="image-size-picker"><legend>图片尺寸 <em>*</em></legend><p>可多选；每个比例将单独生成一张封面图片</p><div>{coverSizeGroups.map(group=><section key={group.label}><b>{group.label}</b><div>{group.options.map(([size,label])=><label key={size}><input type="checkbox" disabled={["1:1","16:9","9:16"].includes(size)} checked={value.includes(size)} onChange={event=>onChange(event.target.checked?[...value,size]:value.filter(item=>item!==size))}/><span>{label}{["1:1","16:9","9:16"].includes(size)?" · 必选":""}</span></label>)}</div></section>)}</div>{!hasRequiredVideoCoverSizes&&<small className="image-size-required">请同时选择 1:1、16:9 和 9:16 图片尺寸</small>}<small className="image-size-note">程序会将所选图片比例写入提示词并分别调用图片服务；实际图片尺寸由服务返回，页面按返回结果显示。</small><small className="image-size-note">1:1 用于唱片封套，16:9、9:16 分别用于横竖版背景。</small></fieldset>;
 }
 
+type WritingPipeline = { program_name: string; stages: { id: string; name: string; description: string }[] };
+
+function WritingPipelinePanel({pipeline,connected}:{pipeline:WritingPipeline|null;connected:boolean}) {
+  return <section className="writing-pipeline" aria-label="固定生成流程">
+    <header>
+      <p>固定生成流程</p>
+      <h2>{pipeline?.program_name ?? "小琳爱读书的365天"}</h2>
+      <p>温柔、知性、成熟的陪伴式阅读分享，从读者视角谈原书、日常生活与人生感悟。</p>
+    </header>
+    {pipeline ? <ol>{pipeline.stages.map(stage=><li key={stage.id}><b>{stage.name}</b><p>{stage.description}</p></li>)}</ol>
+      : <p className="writing-pipeline-status">{connected ? "正在读取生成流程…" : "连接本地服务后可查看生成流程。"}</p>}
+  </section>;
+}
+
 function PromptLibraryDialog({connected,onClose,onSaved}:{connected:boolean;onClose:()=>void;onSaved:()=>void}) {
   const [kind,setKind]=useState<"writing"|"cover">("writing");
   const [items,setItems]=useState<PromptTemplate[]>([]); const [name,setName]=useState(""); const [text,setText]=useState(""); const [imageSizes,setImageSizes]=useState<string[]>(["1:1","16:9","9:16"]);
+  const [pipeline,setPipeline]=useState<WritingPipeline|null>(null);
+  const [duration,setDuration]=useState("");
+  const [error,setError]=useState("");
   const [editingId,setEditingId]=useState<string|null>(null); const [saving,setSaving]=useState(false);
   const load=()=>connected&&fetch(`${API}/api/prompts`).then(r=>r.json()).then(setItems).catch(()=>{});
-  useEffect(()=>{if(connected) void fetch(`${API}/api/prompts`).then(r=>r.json()).then(setItems).catch(()=>{});},[connected]);
-  const clearEditor=()=>{setName("");setText("");setImageSizes(["1:1","16:9","9:16"]);setEditingId(null)};
+  useEffect(()=>{
+    if (!connected) return;
+    void fetch(`${API}/api/prompts`).then(r=>r.json()).then(setItems).catch(()=>{});
+    void fetch(`${API}/api/prompts/writing-pipeline`).then(r=>{
+      if (!r.ok) throw new Error();
+      return r.json();
+    }).then(setPipeline).catch(()=>setError("无法读取生成流程，请检查本地服务。"));
+  },[connected]);
+  const clearEditor=()=>{setName("");setText("");setDuration("");setError("");setImageSizes(["1:1","16:9","9:16"]);setEditingId(null)};
   const hasRequiredCoverSizes=["1:1","16:9","9:16"].every(size=>imageSizes.includes(size));
-  const saveTemplate=async()=>{if(!name.trim()||!text.trim()||(kind==="cover"&&!hasRequiredCoverSizes))return;setSaving(true);try{const url=editingId?`${API}/api/prompts/${editingId}`:`${API}/api/prompts`;const payload={name,text,image_sizes:imageSizes};const res=await fetch(url,{method:editingId?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(editingId?payload:{kind,...payload})});if(res.ok){clearEditor();load();onSaved();}}finally{setSaving(false)}};
-  const edit=(item:PromptTemplate)=>{setEditingId(item.id);setName(item.name);setText(item.text);setImageSizes([...new Set([...(item.image_sizes||[]),"1:1","16:9","9:16"])])};
+  const saveTemplate=async(event:FormEvent)=>{
+    event.preventDefault();
+    if(!name.trim()||!text.trim()||(kind==="cover"&&!hasRequiredCoverSizes))return;
+    setSaving(true);
+    setError("");
+    try {
+      const url=editingId?`${API}/api/prompts/${editingId}`:`${API}/api/prompts`;
+      const payload={name,text,...(kind==="writing"?{duration_minutes:duration?Number(duration):null}:{image_sizes:imageSizes})};
+      const res=await fetch(url,{method:editingId?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(editingId?payload:{kind,...payload})});
+      if(!res.ok) throw new Error();
+      clearEditor(); load(); onSaved();
+    } catch { setError("保存失败，请检查模板内容和本地服务后重试。"); }
+    finally { setSaving(false); }
+  };
+  const edit=(item:PromptTemplate)=>{setEditingId(item.id);setName(item.name);setText(item.text);setDuration(item.duration_minutes?.toString()??"");setError("");setImageSizes([...new Set([...(item.image_sizes||[]),"1:1","16:9","9:16"])])};
   const remove=async(id:string)=>{await fetch(`${API}/api/prompts/${id}`,{method:"DELETE"});load();onSaved();};
   const visible=items.filter(x=>x.kind===kind);
   const switchKind=(next:"writing"|"cover")=>{setKind(next);clearEditor()};
@@ -219,35 +263,73 @@ function PromptLibraryDialog({connected,onClose,onSaved}:{connected:boolean;onCl
     <div className="modal config-modal prompt-library">
       <div className="modal-head"><div><p className="eyebrow">全局配置</p><h2>提示词库</h2></div><button className="close" onClick={onClose}>×</button></div>
       <nav className="settings-tabs prompt-tabs" aria-label="提示词分类">
-        <button className={kind==="writing"?"active":""} onClick={()=>switchKind("writing")}><span aria-hidden="true">文</span><div><b>分享稿提示词 <em>{writingCount}</em></b><small>定义分享稿结构、语气与长度</small></div></button>
+        <button className={kind==="writing"?"active":""} onClick={()=>switchKind("writing")}><span aria-hidden="true">文</span><div><b>分享稿提示词 <em>{writingCount}</em></b><small>查看生成流程，调整节目模板</small></div></button>
         <button className={kind==="cover"?"active":""} onClick={()=>switchKind("cover")}><span aria-hidden="true">画</span><div><b>封面提示词 <em>{coverCount}</em></b><small>定义封面风格、构图与色彩</small></div></button>
       </nav>
-      <div className="library-layout">
-        <section className="template-list"><div className="list-caption"><span>已添加模板</span><small>{visible.length} 个</small></div>{visible.map((item,index)=><article className={editingId===item.id?"editing":""} key={item.id}><span className="template-number">{String(index+1).padStart(2,"0")}</span><div className="template-copy"><b>{item.name}</b><p>{item.text}</p></div><div className="template-actions"><button onClick={()=>edit(item)}>编辑</button><button className="danger-link" onClick={()=>remove(item.id)}>删除</button></div></article>)}{!visible.length&&<div className="empty-template"><span>◇</span><p>还没有模板，添加第一个模板吧</p></div>}</section>
-        <section className="template-composer"><div className="composer-title"><span>{editingId?"编":"＋"}</span><div><h3>{editingId?"编辑模板":"添加新模板"}</h3><p>{kind==="writing"?"定义文案的结构、语气与长度":"定义封面的风格、构图与色彩"}</p></div></div><label>模板名称<input value={name} onChange={event=>setName(event.target.value)} placeholder={kind==="writing"?"例如：知识型口播":"例如：复古油画"}/></label><label>提示词内容<textarea value={text} onChange={event=>setText(event.target.value)} placeholder={kind==="writing"?"描述分享稿的语气、结构和长度要求":"描述封面的风格、构图和色彩要求"}/></label>{kind==="cover"&&<ImageSizePicker value={imageSizes} onChange={setImageSizes}/>}<div className="composer-actions">{editingId&&<button className="secondary" onClick={clearEditor}>取消编辑</button>}<button className="primary action-button" disabled={!connected||!name.trim()||!text.trim()||(kind==="cover"&&!hasRequiredCoverSizes)||saving} onClick={saveTemplate}><span aria-hidden="true">{editingId?"✓":"＋"}</span>{saving?"保存中…":editingId?"保存修改":"添加模板"}</button></div></section>
+      {kind==="writing"&&<WritingPipelinePanel pipeline={pipeline} connected={connected}/>}
+      <div className={`library-layout${kind==="writing"?" writing-library":""}`}>
+        <section className="template-list">
+          <div className="list-caption"><span>{kind==="writing"?"节目模板":"已添加模板"}</span><small>{visible.length} 个</small></div>
+          {visible.map((item,index)=><article className={editingId===item.id?"editing":""} key={item.id}>
+            {kind==="cover"&&<span className="template-number">{String(index+1).padStart(2,"0")}</span>}
+            <div className="template-copy"><b>{item.name}</b>
+              {kind==="writing"&&<small>{item.id==="writing-xiaolin"&&"默认节目模板 · "}{item.duration_minutes?`约 ${item.duration_minutes} 分钟`:"沿用模板内的时长要求"}</small>}
+              <p>{item.text}</p>
+            </div>
+            <div className="template-actions"><button onClick={()=>edit(item)} aria-label={`编辑${item.name}`}>编辑</button><button className="danger-link" onClick={()=>remove(item.id)} aria-label={`删除${item.name}`}>删除</button></div>
+          </article>)}
+          {!visible.length&&<div className="empty-template"><span>◇</span><p>还没有模板，添加第一个模板吧</p></div>}
+        </section>
+        <form className="template-composer" onSubmit={saveTemplate}>
+          <div className="composer-title"><span aria-hidden="true">{editingId?"编":"＋"}</span><div><h3>{editingId?"编辑模板":"添加新模板"}</h3><p>{kind==="writing"?"调整每类节目的时长、选题和表达偏好。":"定义封面的风格、构图与色彩"}</p></div></div>
+          <label>模板名称<input required maxLength={80} value={name} onChange={event=>setName(event.target.value)} placeholder={kind==="writing"?"例如：小说轻剧透":"例如：复古油画"}/></label>
+          {kind==="writing"&&<label>目标时长（分钟）<input type="number" min={1} max={60} step={1} value={duration} onChange={event=>setDuration(event.target.value)} placeholder="10～15（默认）"/><small>留空时沿用模板中的时长要求，未指定则按 10～15 分钟撰写。</small></label>}
+          <label>{kind==="writing"?"选题与表达偏好":"提示词内容"}<textarea required maxLength={100000} value={text} onChange={event=>setText(event.target.value)} placeholder={kind==="writing"?"例如：围绕人物的一次选择，从日常困境切入，避免透露结局。":"描述封面的风格、构图和色彩要求"}/></label>
+          {kind==="cover"&&<ImageSizePicker value={imageSizes} onChange={setImageSizes}/>}
+          {error&&<p className="settings-error" role="alert">{error}</p>}
+          <div className="composer-actions">{editingId&&<button type="button" className="secondary" onClick={clearEditor}>取消编辑</button>}<button className="primary action-button" disabled={!connected||!name.trim()||!text.trim()||(kind==="cover"&&!hasRequiredCoverSizes)||saving}><span aria-hidden="true">{editingId?"✓":"＋"}</span>{saving?"保存中…":editingId?"保存修改":"添加模板"}</button></div>
+        </form>
       </div>
     </div>
   </div>;
 }
 
-function CoverGallery({covers,bookTitle,coverPrompts}:{covers:Asset[];bookTitle:string;coverPrompts?:PromptTemplate[]}) {
+function CoverGallery({covers,bookTitle,coverPrompts,onRegenerate,regenerating,blocked,error}:{
+  covers:Asset[];bookTitle:string;coverPrompts?:PromptTemplate[];onRegenerate?:(url:string)=>void;
+  regenerating:string|null;blocked:boolean;error?:{cover_url:string;message:string}|null;
+}) {
   const [active,setActive]=useState(0); const selected=covers[Math.min(active,covers.length-1)];
   if(!selected)return <EmptyMedia text="封面尚未生成"/>;
   const promptName=selected.prompt_name||coverPrompts?.find(prompt=>prompt.text===selected.prompt)?.name||`封面提示词 ${active+1}`;
-  return <section className="cover-gallery"><figure className="cover-stage"><img src={`${API}${selected.url}`} alt={`${bookTitle}封面 ${active+1}`}/><figcaption><b>{promptName}</b><span>比例 {selected.image_ratio||"未记录"} · 分辨率 {selected.resolution||"未记录"}</span></figcaption></figure><div className="cover-thumbnails">{covers.map((cover,index)=><button type="button" key={cover.url} className={index===active?"active":""} onClick={()=>setActive(index)} aria-label={`切换到第 ${index+1} 张封面`}><img src={`${API}${cover.url}`} alt=""/><span>第 {index+1} 张</span><small>{cover.image_ratio||"未记录"} · {cover.resolution||"未记录"}</small></button>)}</div><p className="cover-gallery-summary">共生成 <b>{covers.length}</b> 张图片 · 当前第 {active+1} 张</p></section>;
+  const pending=regenerating===selected.url;
+  const failure=error?.cover_url===selected.url ? error.message : "";
+  return <section className="cover-gallery">
+    <figure className="cover-stage"><img src={`${API}${selected.url}`} alt={`${bookTitle}封面 ${active+1}`}/><figcaption><b>{promptName}</b><span>比例 {selected.image_ratio||"未记录"} · 分辨率 {selected.resolution||"未记录"}</span></figcaption></figure>
+    <div className="cover-thumbnails">{covers.map((cover,index)=><button type="button" key={cover.url} className={index===active?"active":""} onClick={()=>setActive(index)} aria-label={`切换到第 ${index+1} 张封面`}><img src={`${API}${cover.url}`} alt=""/><span>第 {index+1} 张</span><small>{cover.image_ratio||"未记录"} · {cover.resolution||"未记录"}</small></button>)}</div>
+    <p className="cover-gallery-summary">共生成 <b>{covers.length}</b> 张图片 · 当前第 {active+1} 张</p>
+    {onRegenerate&&<div className="video-regenerate" aria-busy={pending}>
+      <div><p>{pending?"正在重新生成，当前封面可继续查看。":regenerating?"另一张封面正在重新生成。":blocked?"请等待当前配音或视频任务完成。":"重新生成视频时会使用最新封面。"}</p>
+        {failure&&<p className="video-regenerate-error" role="alert">{failure}</p>}</div>
+      <button type="button" className="primary" disabled={blocked||!!regenerating} onClick={()=>onRegenerate(selected.url)}>{pending?"正在重新生成…":failure?"重试生成此封面":"重新生成此封面"}</button>
+    </div>}
+  </section>;
 }
 
-function DetailPanel({task,onClose,onRetry,onDelete,onRegenerateVideo,onRegenerateAudio}:{task:Workflow;onClose:()=>void;onRetry:()=>void;onDelete:()=>Promise<void>;onRegenerateVideo:()=>Promise<void>;onRegenerateAudio:(voice:string)=>Promise<void>}) {
+function DetailPanel({task,onClose,onRetry,onDelete,onRegenerateVideo,onRegenerateAudio,onRegenerateCover}:{task:Workflow;onClose:()=>void;onRetry:()=>void;onDelete:()=>Promise<void>;onRegenerateVideo:()=>Promise<void>;onRegenerateAudio:(voice:string)=>Promise<void>;onRegenerateCover:(url:string)=>Promise<void>}) {
   const [tab,setTab]=useState("overview"); const [compare,setCompare]=useState(0); const [confirmDelete,setConfirmDelete]=useState(false); const [deleting,setDeleting]=useState(false); const [deleteError,setDeleteError]=useState("");
   const [videoBusy,setVideoBusy]=useState(false); const [videoMessage,setVideoMessage]=useState("");
   const [audioBusy,setAudioBusy]=useState(false); const [audioMessage,setAudioMessage]=useState("");
+  const [coverBusy,setCoverBusy]=useState<string|null>(null);
+  const [coverMessage,setCoverMessage]=useState<{cover_url:string;message:string}|null>(null);
   const [voices,setVoices]=useState<string[]>([]); const [voice,setVoice]=useState(task.audio?.[0]?.voice||"zh-CN-XiaoxiaoNeural");
   useEffect(()=>{let cancelled=false;fetch(`${API}/api/voices`).then(r=>r.json()).then(data=>{if(cancelled)return;const names=(data.items||[]).map((item:VoiceItem)=>item.short_name).filter(Boolean);const list=names.length?names:(data.voices||[]);if(list.length)setVoices(list)}).catch(()=>{});return()=>{cancelled=true}},[]);
   const videoRegenerating=videoBusy||!!task.video_regenerating;
   const audioRegenerating=audioBusy||!!task.audio_regenerating;
+  const coverRegenerating=coverBusy||task.cover_regenerating?.cover_url||null;
   const voiceChoices=voices.includes(voice)?voices:[voice,...voices];
   const regenerateVideo=async()=>{setVideoBusy(true);setVideoMessage("");try{await onRegenerateVideo()}catch(error){setVideoMessage(error instanceof Error?error.message:"重新生成失败，请稍后重试")}finally{setVideoBusy(false)}};
   const regenerateAudio=async()=>{setAudioBusy(true);setAudioMessage("");try{await onRegenerateAudio(voice)}catch(error){setAudioMessage(error instanceof Error?error.message:"重新生成配音失败，请稍后重试")}finally{setAudioBusy(false)}};
+  const regenerateCover=async(url:string)=>{setCoverBusy(url);setCoverMessage(null);try{await onRegenerateCover(url)}catch(error){setCoverMessage({cover_url:url,message:error instanceof Error?error.message:"重新生成封面失败，请稍后重试"})}finally{setCoverBusy(null)}};
   const remove=async()=>{setDeleting(true);setDeleteError("");try{await onDelete()}catch{setDeleteError("删除失败，请稍后重试");setDeleting(false)}};
   const tabs=[['overview','概览'],['drafts','分享稿'],['audio','配音'],['subtitles','字幕'],['covers','封面'],['videos','视频']];
   const pipelineStep=Math.max(0,task.step-1);
@@ -258,11 +340,19 @@ function DetailPanel({task,onClose,onRetry,onDelete,onRegenerateVideo,onRegenera
     <div className="drawer-content">
       {task.status!=="completed"&&<div className="pipeline"><div className="pipeline-head"><span>{pipelineFailed?"制作遇到问题":`正在${stages[pipelineStep]||"准备"}`}</span><b>{task.progress}%</b></div><div className="progress"><i style={{width:`${task.progress}%`}}/></div><div className="steps">{stages.map((s,i)=><span className={i<pipelineStep?"done":i===pipelineStep?(pipelineFailed?"failed":"now"):""} key={s}>{i<pipelineStep?"✓":i+1}<small>{s}</small></span>)}</div>{pipelineFailed&&<p className="error">{task.error||"制作失败，但没有记录到具体原因。"} <button onClick={onRetry}>重试</button></p>}</div>}
       {tab==="overview"&&<section className="result-section"><h3>书籍简介</h3><div className="paper">{task.description||"简介将在书籍解析完成后出现。"}</div><h3>标签和话题</h3><div className="taxonomy-panel"><div><b>标签</b><p>{task.tags?.length?task.tags.map(tag=><span key={tag}>{tag}</span>):<small>标签尚未生成</small>}</p></div><div><b>话题</b><p>{task.topics?.length?task.topics.map(topic=><span key={topic}>#{topic}</span>):<small>话题尚未生成</small>}</p></div></div><h3>产出清单</h3><div className="asset-summary"><span><b>{task.polished_drafts?.length||0}</b> 篇分享稿</span><span><b>{task.audio?.length||0}</b> 份配音</span><span><b>{task.subtitles?.length||0}</b> 份字幕</span><span><b>{task.covers?.length||0}</b> 张封面</span><span><b>{task.videos?.length||0}</b> 条视频</span></div></section>}
-      {tab==="drafts"&&<section className="result-section"><div className="section-inline"><h3>分享稿对比</h3>{(task.polished_drafts?.length||0)>1&&<select value={compare} onChange={e=>setCompare(+e.target.value)}>{task.polished_drafts?.map((d,i)=><option key={d.id} value={i}>版本 {i+1}</option>)}</select>}</div><div className="compare"><article><label>原始稿</label><p>{task.original_drafts?.[compare]?.text||"尚未生成"}</p></article><article className="polished"><label>自然化优化稿</label><p>{task.polished_drafts?.[compare]?.text||"尚未生成"}</p></article></div></section>}
-      {tab==="covers"&&<CoverGallery covers={task.covers||[]} bookTitle={task.book_title} coverPrompts={task.cover_prompts}/>}
-      {tab==="audio"&&<section className="audio-panel" aria-busy={audioRegenerating}>{task.status==="completed"&&<div className="audio-regenerate"><div><b>重新生成配音</b><p>按所选音色重新合成全部配音，并同时重新生成字幕。语速和背景音乐保持不变。视频页的「重新生成视频」会使用这里最新的配音和字幕。</p><VoiceControl label="配音音色" voices={voiceChoices} value={voice} onChange={setVoice} disabled={audioRegenerating||videoRegenerating}/>{(audioMessage||task.audio_error)&&<p className="audio-regenerate-error" role="alert">{audioMessage||task.audio_error}</p>}</div><button type="button" className="primary" disabled={audioRegenerating||videoRegenerating||!voice.trim()} onClick={regenerateAudio}>{audioRegenerating?"正在重新生成配音和字幕…":"重新生成配音"}</button></div>}<div className="audio-list">{task.audio?.length?task.audio.map((a,i)=><article key={`${a.url}-${task.updated_at||0}`}><span>声</span><div><b>{a.voice}</b><small>分享稿 {i+1} · 语速 {a.speech_rate===0||a.speech_rate===undefined?"正常":`${a.speech_rate>0?"+":""}${a.speech_rate}%`}</small></div><audio controls preload="none" src={`${API}${a.url}?v=${task.updated_at||0}`}/></article>):<EmptyMedia text="配音尚未生成"/>}</div></section>}
+      {tab==="drafts"&&<section className="result-section">
+        <div className="section-inline"><h3>播讲稿</h3>{(task.polished_drafts?.length||0)>1&&<select aria-label="选择播讲稿版本" value={compare} onChange={e=>setCompare(+e.target.value)}>{task.polished_drafts?.map((d,i)=><option key={d.id} value={i}>{d.prompt_name||`版本 ${i+1}`}</option>)}</select>}</div>
+        <div className="compare broadcast-result"><article className="polished">
+          <label>最终稿 {typeof task.polished_drafts?.[compare]?.review_score==="number"&&`· 审核 ${task.polished_drafts[compare].review_score} 分`}</label>
+          <p>{task.polished_drafts?.[compare]?.text||"尚未生成"}</p>
+        </article>{task.original_drafts?.[compare]?.text&&<details><summary>查看播讲初稿</summary><p>{task.original_drafts[compare].text}</p></details>}</div>
+      </section>}
+      {tab==="covers"&&<CoverGallery covers={task.covers||[]} bookTitle={task.book_title} coverPrompts={task.cover_prompts}
+        onRegenerate={task.status==="completed"?regenerateCover:undefined} regenerating={coverRegenerating}
+        blocked={videoRegenerating||audioRegenerating} error={coverMessage||task.cover_error}/>}
+      {tab==="audio"&&<section className="audio-panel" aria-busy={audioRegenerating}>{task.status==="completed"&&<div className="audio-regenerate"><div><b>重新生成配音</b><p>按所选音色重新合成全部配音，并同时重新生成字幕。语速和背景音乐保持不变。视频页的「重新生成视频」会使用这里最新的配音和字幕。</p><VoiceControl label="配音音色" voices={voiceChoices} value={voice} onChange={setVoice} disabled={audioRegenerating||videoRegenerating||!!coverRegenerating}/>{(audioMessage||task.audio_error)&&<p className="audio-regenerate-error" role="alert">{audioMessage||task.audio_error}</p>}</div><button type="button" className="primary" disabled={audioRegenerating||videoRegenerating||!!coverRegenerating||!voice.trim()} onClick={regenerateAudio}>{audioRegenerating?"正在重新生成配音和字幕…":"重新生成配音"}</button></div>}<div className="audio-list">{task.audio?.length?task.audio.map((a,i)=><article key={`${a.url}-${task.updated_at||0}`}><span>声</span><div><b>{a.voice}</b><small>分享稿 {i+1} · 语速 {a.speech_rate===0||a.speech_rate===undefined?"正常":`${a.speech_rate>0?"+":""}${a.speech_rate}%`}</small></div><audio controls preload="none" src={`${API}${a.url}?v=${task.updated_at||0}`}/></article>):<EmptyMedia text="配音尚未生成"/>}</div></section>}
       {tab==="subtitles"&&<section className="audio-list">{task.subtitles?.length?task.subtitles.map((item,i)=><article key={item.srt_url}><span>字</span><div><b>{item.voice}</b><small>分享稿 {i+1}</small><div className="subtitle-downloads"><a href={`${API}${item.srt_url}`} download>下载 SRT</a><a href={`${API}${item.txt_url}`} download>下载 TXT</a><a href={`${API}${item.json_url}`} download>下载 JSON</a></div></div></article>):<EmptyMedia text="字幕尚未生成"/>}</section>}
-      {tab==="videos"&&<section className="video-panel" aria-busy={videoRegenerating}>{task.status==="completed"&&<div className="video-regenerate"><div><b>按视频设置重新生成</b><p>使用最新配音，清理字幕后同时生成横竖两版播放器视频。</p>{(videoMessage||task.video_error)&&<p className="video-regenerate-error" role="alert">{videoMessage||task.video_error}</p>}</div><button type="button" className="primary" disabled={videoRegenerating||audioRegenerating} onClick={regenerateVideo}>{videoRegenerating?"正在重新生成…":"重新生成视频"}</button></div>}<div className="video-grid">{task.videos?.length?task.videos.map(a=><figure key={`${a.url}-${task.updated_at||0}`}><video className={a.orientation||"portrait"} controls preload="metadata" src={`${API}${a.url}?v=${task.updated_at||0}`}/><figcaption><b>{a.voice} · 分享稿 {Math.max(0,(task.polished_drafts||[]).findIndex(d=>d.id===a.draft_id))+1} · {a.orientation==="landscape"?"横版 16:9":"竖版 9:16"}</b><a href={`${API}${a.url}`} download>下载视频</a><span>分辨率：{a.resolution||"未记录"}</span><span>视频时长：{formatVideoDuration(a.duration)}</span></figcaption></figure>):<EmptyMedia text="视频尚未生成"/>}</div></section>}
+      {tab==="videos"&&<section className="video-panel" aria-busy={videoRegenerating}>{task.status==="completed"&&<div className="video-regenerate"><div><b>按视频设置重新生成</b><p>使用最新配音，清理字幕后同时生成横竖两版播放器视频。</p>{(videoMessage||task.video_error)&&<p className="video-regenerate-error" role="alert">{videoMessage||task.video_error}</p>}</div><button type="button" className="primary" disabled={videoRegenerating||audioRegenerating||!!coverRegenerating} onClick={regenerateVideo}>{videoRegenerating?"正在重新生成…":"重新生成视频"}</button></div>}<div className="video-grid">{task.videos?.length?task.videos.map(a=><figure key={`${a.url}-${task.updated_at||0}`}><video className={a.orientation||"portrait"} controls preload="metadata" src={`${API}${a.url}?v=${task.updated_at||0}`}/><figcaption><b>{a.voice} · 分享稿 {Math.max(0,(task.polished_drafts||[]).findIndex(d=>d.id===a.draft_id))+1} · {a.orientation==="landscape"?"横版 16:9":"竖版 9:16"}</b><a href={`${API}${a.url}`} download>下载视频</a><span>分辨率：{a.resolution||"未记录"}</span><span>视频时长：{formatVideoDuration(a.duration)}</span></figcaption></figure>):<EmptyMedia text="视频尚未生成"/>}</div></section>}
     </div>{confirmDelete&&<div className="confirm-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&!deleting&&setConfirmDelete(false)}><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><span className="danger-mark">删</span><h3 id="delete-title">确定删除《{task.book_title}》？</h3><p>该作品的简介、分享稿、封面、配音和视频都会被永久删除，此操作无法撤销。</p>{deleteError&&<small>{deleteError}</small>}<div><button className="secondary" disabled={deleting} onClick={()=>setConfirmDelete(false)}>取消</button><button className="danger-button" disabled={deleting} onClick={remove}>{deleting?"正在删除…":"确认永久删除"}</button></div></section></div>}
   </aside></div>;
 }
@@ -279,7 +369,7 @@ function formatVideoDuration(value?:number) {
 function SettingsDialog({connected,onClose,onSaved}:{connected:boolean;onClose:()=>void;onSaved:()=>void}) {
   type Provider = "text" | "image";
   type ModelListState = {models:string[];loading:boolean;error:string;message:string};
-  const [form,setForm]=useState<AppSettings>(defaultSettings); const [saving,setSaving]=useState(false); const [error,setError]=useState(""); const [settingsTab,setSettingsTab]=useState<"model"|"help">("model");
+  const [form,setForm]=useState<AppSettings>(defaultSettings); const [saving,setSaving]=useState(false); const [error,setError]=useState(""); const [settingsTab,setSettingsTab]=useState<"model"|"firecrawl"|"help">("model");
   const [lists,setLists]=useState<Record<Provider,ModelListState>>({text:{models:[],loading:false,error:"",message:""},image:{models:[],loading:false,error:"",message:""}});
   useEffect(()=>{if(connected)fetch(`${API}/api/settings`).then(r=>{if(!r.ok)throw new Error();return r.json()}).then(setForm).catch(()=>setError("模型配置加载失败，请稍后重新打开页面"));},[connected]);
   const updateApi=(provider:Provider,field:"api_base"|"api_key",value:string)=>{
@@ -301,7 +391,7 @@ function SettingsDialog({connected,onClose,onSaved}:{connected:boolean;onClose:(
   const save=async()=>{if(!connected){onSaved();return;}setSaving(true);setError("");try{const response=await fetch(`${API}/api/settings`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(form)});if(!response.ok)throw new Error("保存失败，请稍后重试");setForm(await response.json());onSaved();}catch(reason){setError(reason instanceof Error?reason.message:"保存失败");}finally{setSaving(false)}};
   return <div className="modal-backdrop" role="presentation" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal config-modal settings-modal">
     <div className="modal-head"><div><p className="eyebrow">创作引擎</p><h2>模型配置</h2></div><button className="close" onClick={onClose}>×</button></div>
-    <nav className="settings-tabs" aria-label="模型配置分类"><button className={settingsTab==="model"?"active":""} onClick={()=>setSettingsTab("model")}><span>AI</span><div><b>OpenAI 兼容接口</b><small>文本与图片生成</small></div></button><button className={settingsTab==="help"?"active":""} onClick={()=>setSettingsTab("help")}><span>?</span><div><b>配置说明</b><small>填写 → 获取 → 选择 → 保存</small></div></button></nav>
+    <nav className="settings-tabs" aria-label="模型配置分类"><button className={settingsTab==="model"?"active":""} onClick={()=>setSettingsTab("model")}><span>AI</span><div><b>OpenAI 兼容接口</b><small>文本与图片生成</small></div></button><button className={settingsTab==="firecrawl"?"active":""} onClick={()=>setSettingsTab("firecrawl")}><span>查</span><div><b>Firecrawl 搜索</b><small>自动查找图书资料</small></div></button><button className={settingsTab==="help"?"active":""} onClick={()=>setSettingsTab("help")}><span>?</span><div><b>配置说明</b><small>填写 → 获取 → 选择 → 保存</small></div></button></nav>
     <div className="settings-pane">{settingsTab==="model"?(["text","image"] as const).map(provider=>{
       const label=provider==="text"?"文本":"图片"; const modelField=provider==="text"?"model":"image_model"; const list=lists[provider]; const disabled=saving||list.loading;
       return <div className="settings-block" key={provider}><h3>{label}模型</h3>
@@ -309,13 +399,18 @@ function SettingsDialog({connected,onClose,onSaved}:{connected:boolean;onClose:(
         <div className="model-picker-row"><div className="model-picker-field"><span>{label}模型</span><ModelSelect label={`${label}模型`} models={list.models} value={form[modelField]} disabled={disabled||!list.models.length} onChange={model=>setForm(current=>({...current,[modelField]:model}))}/></div><button type="button" className="secondary get-models-button" disabled={!connected||disabled} onClick={()=>void getModels(provider)}>{list.loading?"获取中…":"获取模型"}</button></div>
         {list.error&&<p className="settings-error" role="alert">{list.error}</p>}{list.message&&<p className="model-fetch-message" role="status">{list.message}</p>}
       </div>;
-    }):<section className="config-help model-config-help" aria-label="模型配置使用说明">
+    }):settingsTab==="firecrawl"?<section className="settings-block firecrawl-settings">
+      <h3>Firecrawl 图书搜索</h3>
+      <label className="firecrawl-toggle"><input type="checkbox" checked={form.firecrawl_enabled??true} onChange={e=>setForm(current=>({...current,firecrawl_enabled:e.target.checked}))} disabled={saving}/>自动搜索图书资料</label>
+      <div className="form-grid model-api-fields"><label>Firecrawl API 密钥<input type="password" value={form.firecrawl_api_key??""} onChange={e=>setForm(current=>({...current,firecrawl_api_key:e.target.value}))} disabled={saving} placeholder="从 FIRECRAWL_API_KEY 读取或在此填写" autoComplete="off"/></label></div>
+      <p className="firecrawl-hint">每本书按书名、作者和版本查找公开资料，多个稿件模板共用搜索结果。密钥留空保存可停用搜索。</p>
+    </section>:<section className="config-help model-config-help" aria-label="模型配置使用说明">
       <article><span>01</span><div><b>填写地址与密钥</b><p>分别填写文本、图片服务的 API 根地址和密钥，两侧可以使用不同服务。</p><p>地址示例：<code>https://api.example.com/v1</code>。保留服务商要求的 /v1 或自定义前缀。图片服务也可填写以 /images/generations 结尾的完整地址，获取模型时会自动访问同一服务的 /models。</p></div></article>
       <article><span>02</span><div><b>获取模型，再选择</b><p>点击对应的“获取模型”，从下拉框选择一个模型，最后点击“保存设置”。新配置默认不预选模型。</p><p>获取使用当前输入，不必先保存；打开页面和保存设置时不会自动获取。修改地址或密钥后，请重新获取并选择。</p></div></article>
-      <article><span>03</span><div><b>保存与环境变量</b><p><strong>页面保存值 → 对应环境变量 → 默认值</strong>，按此顺序生效；已保存的选择再次打开时会保留。</p><dl><dt>文本服务</dt><dd><code>TEXT_API_BASE</code> · <code>TEXT_API_KEY</code> · <code>MODEL_NAME</code></dd><dt>图片服务</dt><dd><code>IMAGE_API_BASE</code> · <code>IMAGE_API_KEY</code> · <code>IMAGE_MODEL_NAME</code></dd></dl><p>密钥由服务端保存，圆点表示已配置。清空密钥并保存可停用该侧远程调用；没有密钥或未选择模型时，使用演示文案或本地封面。</p></div></article>
+      <article><span>03</span><div><b>保存与环境变量</b><p><strong>页面保存值 → 对应环境变量 → 默认值</strong>，按此顺序生效；已保存的选择再次打开时会保留。</p><dl><dt>文本服务</dt><dd><code>TEXT_API_BASE</code> · <code>TEXT_API_KEY</code> · <code>MODEL_NAME</code></dd><dt>图片服务</dt><dd><code>IMAGE_API_BASE</code> · <code>IMAGE_API_KEY</code> · <code>IMAGE_MODEL_NAME</code></dd><dt>Firecrawl 图书搜索</dt><dd><code>FIRECRAWL_API_KEY</code></dd></dl><p>密钥由服务端保存，圆点表示已配置。清空密钥并保存可停用该侧远程调用；没有密钥或未选择模型时，使用演示文案或本地封面。</p></div></article>
       <article><span>?</span><div><b>遇到问题时</b><ul><li><strong>鉴权失败：</strong>检查密钥是否正确、是否有访问该服务的权限。</li><li><strong>无法获取或列表为空：</strong>确认根地址正确，且服务支持 /models；检查网络和账号权限。</li><li><strong>尚未启动后端：</strong>页面可浏览，获取真实模型需先启动 Python 服务。</li></ul></div></article>
     </section>}</div>
-    {error&&<p className="settings-error" role="alert">{error}</p>}<p className="privacy-note">两组密钥分别保存在服务端并脱敏显示，不会写入前端源码。</p>
+    {error&&<p className="settings-error" role="alert">{error}</p>}<p className="privacy-note">服务密钥统一保存在服务端，页面仅显示脱敏值。</p>
     <div className="modal-actions"><button className="secondary action-button" onClick={onClose}><span aria-hidden="true">×</span>取消</button><button className="primary action-button" onClick={save} disabled={saving||lists.text.loading||lists.image.loading}><span aria-hidden="true">✓</span>{saving?"保存中…":"保存设置"}</button></div>
   </div></div>;
 }
