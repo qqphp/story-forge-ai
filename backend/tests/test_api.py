@@ -332,6 +332,7 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(calls[0]["json"]["model"], "gpt-image-2")
         self.assertNotIn("size", calls[0]["json"])
         self.assertIn("图片比例：16:9", calls[0]["json"]["prompt"])
+        self.assertNotIn("创作无文字的书籍分享封面", calls[0]["json"]["prompt"])
         self.assertEqual(target.read_bytes(), raw.getvalue())
 
     def test_missing_image_key_uses_local_cover_even_with_text_key(self):
@@ -994,10 +995,6 @@ class StoryForgeApiTests(unittest.TestCase):
                 paths.append(path)
             return paths
 
-        def fake_normalize(_ffmpeg, clips, _output_dir, orientation):
-            self.assertEqual(orientation, "landscape")
-            return clips
-
         llm_types = []
 
         async def fake_llm(_messages, _settings, request_type="文稿生成"):
@@ -1018,7 +1015,6 @@ class StoryForgeApiTests(unittest.TestCase):
             return FinishedVideo()
 
         with patch.object(main, "download_stock_videos", side_effect=fake_download), \
-             patch.object(executor, "normalize_stock_videos", side_effect=fake_normalize), \
              patch.object(main, "llm", side_effect=fake_llm), \
              patch.object(main, "speech", speech), patch.object(main, "generate_cover", cover), \
              patch.object(main, "generate_subtitles", subtitles), \
@@ -1029,7 +1025,8 @@ class StoryForgeApiTests(unittest.TestCase):
         self.assertEqual(after.get("video_error"), "", captured)
         self.assertEqual(after["status"], "completed")
         self.assertEqual(llm_types, ["视频搜索词生成"])
-        self.assertIn("stock-videos.ffconcat", " ".join(captured[0]))
+        self.assertIn("stock-videos-", " ".join(captured[0]))
+        self.assertEqual(download_calls["target_duration"], 1.5)
         self.assertEqual(download_calls["provider"], "pexels")
         self.assertEqual(download_calls["orientation"], "landscape")
         self.assertEqual(download_calls["api_key"], "pexels-test")

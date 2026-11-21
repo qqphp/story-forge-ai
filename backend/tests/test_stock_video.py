@@ -17,8 +17,8 @@ class StockVideoTests(unittest.TestCase):
         ]}, {"id": 2, "width": 1080, "height": 1920, "video_files": [{"quality": "hd", "width": 1080, "link": "portrait"}]}]}
         pixabay = {"hits": [{"id": 3, "videos": {"large": {"url": "landscape", "width": 1920, "height": 1080}}},
                               {"id": 4, "videos": {"large": {"url": "portrait", "width": 1080, "height": 1920}}}]}
-        self.assertEqual(_pexels_items(pexels, "landscape"), [{"id": "1", "url": "full-hd"}])
-        self.assertEqual(_pixabay_items(pixabay, "portrait"), [{"id": "4", "url": "portrait"}])
+        self.assertEqual(_pexels_items(pexels, "landscape"), [{"id": "1", "url": "full-hd", "duration": None}])
+        self.assertEqual(_pixabay_items(pixabay, "portrait"), [{"id": "4", "url": "portrait", "duration": None}])
 
     def test_search_query_removes_human_terms(self):
         self.assertEqual(natural_scenery_query("woman walking through misty forest landscape"), "through misty forest landscape")
@@ -45,11 +45,11 @@ class StockVideoTests(unittest.TestCase):
             async def get(self, *args, **kwargs): return SearchResponse()
             def stream(self, *args, **kwargs): return DownloadResponse()
 
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, patch("backend.integrations.stock_video.probe_video_metadata", return_value=("1920 × 1080", 1)), patch("backend.integrations.stock_video.normalize_stock_videos"):
             paths = asyncio.run(download_stock_videos(
                 provider="pexels", api_base="https://api.pexels.com/v1/videos/search",
                 api_key="must-not-be-logged", query="misty mountain landscape",
-                orientation="landscape", output_dir=Path(temporary),
+                orientation="landscape", output_dir=Path(temporary), target_duration=3,
                 log_request=lambda *values: logs.append(values), client_factory=Client,
             ))
         self.assertEqual(len(paths), 3)
@@ -83,10 +83,10 @@ class StockVideoTests(unittest.TestCase):
                 return SearchResponse()
             def stream(self, *args, **kwargs): return DownloadResponse()
 
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, patch("backend.integrations.stock_video.probe_video_metadata", return_value=("1920 × 1080", 1)), patch("backend.integrations.stock_video.normalize_stock_videos"):
             asyncio.run(download_stock_videos(
                 provider="pixabay", api_base="https://pixabay.com/api/videos/", api_key="secret",
-                query="misty mountains", orientation="landscape", output_dir=Path(temporary),
+                query="misty mountains", orientation="landscape", output_dir=Path(temporary), target_duration=3,
                 log_request=lambda *values: None, client_factory=Client,
             ))
         self.assertEqual(captured["video_type"], "all")

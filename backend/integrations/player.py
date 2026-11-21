@@ -1,6 +1,7 @@
 """Shared record-player artwork and FFmpeg composition."""
 from pathlib import Path
 import math
+import os
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from backend.integrations.fonts import FONTS_DIR
 
@@ -79,16 +80,16 @@ def player_command(ffmpeg, cover, narration, output, *, orientation='portrait', 
     if not duration or duration<=0:raise RuntimeError('无法读取配音时长')
     w,h=(1920,1080) if orientation=='landscape' else (1080,1920)
     b=artwork(cover,output,w,h,background_cover,record_label_image_id)
-    command=[ffmpeg,'-y','-filter_complex_threads','1']
+    command=[ffmpeg,'-y','-filter_complex_threads',str(min(8, os.cpu_count() or 1))]
     if stock_manifest:command+=['-stream_loop','-1','-f','concat','-safe','0','-i',str(stock_manifest)]
     else:command+=['-loop','1','-framerate','30','-i',str(output.with_suffix('.background.png'))]
     command+=['-i',str(narration),'-loop','1','-framerate','30','-i',str(output.with_suffix('.disc.png')),'-loop','1','-framerate','30','-i',str(output.with_suffix('.layer.png'))]
     filters=[]
     base=f'[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1'
     if stock_manifest:base+=',eq=saturation=0.5,colorbalance=bs=0.15'
-    if background_blur_enabled and background_blur_strength > 0:
+    if not stock_manifest and background_blur_enabled and background_blur_strength > 0:
         base += f',gblur=sigma={background_blur_strength * .3:g}'
-    if background_overlay_enabled:
+    if not stock_manifest and background_overlay_enabled:
         brightness = 1 - background_overlay_opacity
         base += f',lutrgb=r=val*{brightness}:g=val*{brightness}:b=val*{brightness}'
     filters.append(base+'[bg]')
@@ -105,4 +106,4 @@ def player_command(ffmpeg, cover, narration, output, *, orientation='portrait', 
     if subtitles:
         filters.append(tail+burn_subtitle_filter(subtitles,output,w,h,style=subtitle_style)+'[captioned]');tail='[captioned]'
     filters.append(tail+'format=yuv420p[vout]')
-    return command+['-filter_complex',';'.join(filters),'-map','[vout]','-map','[aout]','-t',str(duration),'-r','30','-c:v','libx264','-preset','veryfast','-crf','23','-c:a','aac','-b:a','128k','-movflags','+faststart',str(output)]
+    return command+['-filter_complex',';'.join(filters),'-map','[vout]','-map','[aout]','-t',str(duration),'-r','30','-c:v','libx264','-threads:v',str(min(4, os.cpu_count() or 1)),'-preset','veryfast','-crf','23','-c:a','aac','-b:a','128k','-movflags','+faststart',str(output)]

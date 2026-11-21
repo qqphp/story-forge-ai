@@ -123,6 +123,7 @@ class SubtitleStyle(BaseModel):
 
 
 class SubtitlePreview(BaseModel):
+    video_generation_method: Literal["local", "stock"] = "local"
     background_blur_enabled: bool = False
     background_blur_strength: float = Field(default=20, ge=0, le=100)
     background_overlay_enabled: bool = True

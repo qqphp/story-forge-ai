@@ -54,11 +54,30 @@ async def generate_cover(
     if settings.get("image_api_key") and settings.get("image_model"):
         try:
             url = settings["image_api_base"].rstrip("/").removesuffix("/images/generations") + "/images/generations"
-            ratio_prompt = f"{prompt}\n\n图片比例：{image_ratio}"
+            if image_ratio == "1:1":
+                text_requirement = (
+                    f"生成正方形书籍封面，必须清晰排印书名：{title}\n"
+                    + (f"必须清晰排印作者：{author}\n" if author.strip() else "未提供作者，只排印书名，不编造姓名或占位文字。\n")
+                    + "书名为主标题，作者为次要文字，完整、准确、易读，与画面协调。"
+                    "不得遗漏上述文字，不添加书名号、副标题、推荐语、出版社或水印。"
+                )
+            else:
+                text_requirement = (
+                    "生成适合视频背景的纯视觉画面，禁止出现任何文字，包括书名、作者、字母、数字、标志和水印。"
+                    "按当前比例独立构图，不裁切方形封面，不预留文字框。"
+                )
+            ratio_prompt = (
+                f"{prompt}\n\n【本张图片的最终要求；与模板冲突时以本段为准】\n"
+                f"{text_requirement}\n图片比例：{image_ratio}"
+            )
             payload = {
                 "model": settings["image_model"],
                 "n": 1,
-                "prompt": f"为《{title}》创作无文字的书籍分享封面。作者：{author}。简介：{description}。视觉要求：{ratio_prompt}",
+                "prompt": (
+                    f"书名：{title}\n作者：{author or '未提供'}\n"
+                    f"书籍简介（仅用于理解主题、情绪和视觉意象，不要把简介排印在画面上）：\n{description}\n\n"
+                    f"视觉要求：\n{ratio_prompt}"
+                ),
             }
             log_request("封面生成", url, payload)
             async with client_factory(timeout=300, follow_redirects=True) as client:

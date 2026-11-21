@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageChops, ImageDraw, ImageStat
 from pydantic import ValidationError
@@ -16,6 +17,23 @@ from backend.integrations.player import player_command, layout
 
 
 class OverlaySettingsTests(unittest.TestCase):
+    def test_stock_background_ignores_overlay_and_blur(self):
+        with patch('backend.integrations.player.artwork', return_value=layout(1080,1920)):
+            command=player_command('ffmpeg',Path('cover.png'),Path('audio.wav'),Path('out.mp4'),duration=2,stock_manifest=Path('stock.ffconcat'),background_overlay_enabled=True,background_overlay_opacity=1,background_blur_enabled=True,background_blur_strength=100)
+        graph=command[command.index('-filter_complex')+1]
+        self.assertNotIn('gblur=',graph)
+        self.assertNotIn('lutrgb=',graph)
+
+    def test_stock_preview_suppresses_local_effects(self):
+        from backend.integrations.subtitle_preview import render_preview
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        command = MagicMock(return_value=['ffmpeg','out.mp4'])
+        with patch('backend.integrations.player.player_command', command), patch('backend.integrations.local_covers.render_local_cover'), patch('backend.integrations.subtitle_preview.subprocess.run', return_value=SimpleNamespace(returncode=0,stdout=b'png',stderr=b'')):
+            self.assertEqual(render_preview(SubtitlePreview(video_generation_method='stock',background_overlay_enabled=True,background_blur_enabled=True)),b'png')
+        self.assertFalse(command.call_args.kwargs['background_overlay_enabled'])
+        self.assertFalse(command.call_args.kwargs['background_blur_enabled'])
+
     def test_blur_defaults_and_validation(self):
         for model in (SettingsPayload, SubtitlePreview):
             self.assertFalse(model().background_blur_enabled)
@@ -55,7 +73,7 @@ class OverlaySettingsTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which('ffmpeg'), 'FFmpeg required')
 class PlayerRenderTests(unittest.TestCase):
-    def test_blur_strength_affects_only_image_and_video_backgrounds(self):
+    def test_blur_strength_affects_only_local_backgrounds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cover = root / 'cover.png'
@@ -87,6 +105,10 @@ class PlayerRenderTests(unittest.TestCase):
                                 frames.append(frame.convert('RGB'))
                         self.assertIsNone(ImageChops.difference(frames[0], frames[1]).getbbox())
                         contrasts = [sum(ImageStat.Stat(frame.crop((32, 32, 256, 256))).stddev) for frame in frames]
+                        if source:
+                            for frame in frames[1:]:
+                                self.assertIsNone(ImageChops.difference(frames[0],frame).getbbox())
+                            continue
                         self.assertGreater(contrasts[0], contrasts[2] + 10)
                         self.assertGreater(contrasts[2], contrasts[3] + 10)
                         x, y, _ = layout(*frames[0].size)['cover']
@@ -116,6 +138,10 @@ class PlayerRenderTests(unittest.TestCase):
                         subprocess.run(command[:-1]+['-frames:v','1','-an','-c:v','png','-f','image2',str(png)], check=True, capture_output=True, timeout=30)
                         frames.append(Image.open(png).convert('RGB'))
                     self.assertEqual(frames[0].getpixel((30,30)),frames[1].getpixel((30,30)))
+                    if source:
+                        for frame in frames[1:]:
+                            self.assertIsNone(ImageChops.difference(frames[0],frame).getbbox())
+                        continue
                     bright = frames[1].getpixel((30,30))[0]
                     self.assertAlmostEqual(frames[2].getpixel((30,30))[0], bright*.75, delta=4)
                     self.assertLess(frames[3].getpixel((30,30))[0],4)

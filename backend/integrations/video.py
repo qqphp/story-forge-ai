@@ -107,16 +107,17 @@ def write_concat_manifest(path: Path, videos: list[Path]) -> Path:
     return path
 
 
-def normalize_stock_videos(ffmpeg: str, videos: list[Path], output_dir: Path, orientation: str) -> list[Path]:
+def normalize_stock_videos(ffmpeg: str, videos: list[Path], output_dir: Path, orientation: str, duration_limit: float | None = None) -> list[Path]:
     """Normalize varying provider clips so FFmpeg's concat demuxer can loop them safely."""
     width, height = (1920, 1080) if orientation == "landscape" else (1080, 1920)
     normalized: list[Path] = []
     for index, source in enumerate(videos, 1):
-        target = output_dir / f"stock-normalized-{index}.mp4"
+        target = output_dir / f"{source.stem}-normalized.mp4"
         result = subprocess.run([
-            ffmpeg, "-y", "-i", str(source), "-an", "-vf",
+            ffmpeg, "-y", "-xerror", "-i", str(source), "-map", "0:v:0", "-an",
+            *(["-t", str(duration_limit)] if duration_limit is not None else []), "-vf",
             f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps=30",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(target),
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(target),
         ], capture_output=True, timeout=180)
         if result.returncode != 0:
             raise RuntimeError(f"第 {index} 段无版权视频标准化失败")

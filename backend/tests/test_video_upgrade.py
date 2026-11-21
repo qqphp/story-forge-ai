@@ -47,3 +47,34 @@ class VideoUpgradeTests(unittest.TestCase):
                 videos=asyncio.run(compose_videos('x',dict(book_title='测试',output_dir='x'),dict(burn_subtitles=False,background_blur_enabled=True,background_blur_strength=73),root,covers,[dict(draft_id=g,voice='voice',url=f'/media/x/{g}.mp3') for g in ('a','b')],description='',is_deleting=lambda _:False,llm=AsyncMock(),video_command=command,download_stock_videos=AsyncMock(),log_request=lambda *a:None))
             self.assertEqual(calls,[('a-1-1.png','landscape','a-16-9.png'),('a-1-1.png','portrait','a-9-16.png'),('b-1-1.png','landscape','b-16-9.png'),('b-1-1.png','portrait','b-9-16.png')])
             self.assertEqual(len({v['url'] for v in videos}),4)
+
+    def test_stock_uses_longest_narration_and_reuses_each_duration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            covers = [dict(image_ratio=ratio, url='/media/x/cover.png') for ratio in ('1:1','16:9','9:16')]
+            clips = [root / 'prepared.mp4']
+            clips[0].write_bytes(b'prepared')
+            calls = []
+            def command(ffmpeg, cover, audio, out, **kwargs):
+                calls.append((kwargs['orientation'], kwargs['duration'], kwargs['stock_manifest']))
+                return [ffmpeg, str(out)]
+            def run(command, **kwargs):
+                Path(command[-1]).write_bytes(b'video')
+                return type('Result', (), dict(returncode=0, stderr=b''))()
+            download = AsyncMock(return_value=clips)
+            with patch('backend.integrations.player.player_command',side_effect=command), patch('backend.modules.workflows.executor.subprocess.run',side_effect=run), patch('backend.modules.workflows.executor.probe_audio_duration',side_effect=[120,480]) as probe, patch('backend.modules.workflows.executor.probe_video_metadata',return_value=(None,1)):
+                videos=asyncio.run(compose_videos('x',dict(book_title='测试',output_dir='x'),dict(video_generation_method='stock',stock_video_provider='pexels',pexels_api_base='https://api.example',pexels_api_key='secret',burn_subtitles=False),root,covers,[dict(draft_id=g,voice='voice',url=f'/media/x/{g}.mp3') for g in ('a','b')],description='',is_deleting=lambda _:False,llm=AsyncMock(return_value='mountain lake'),video_command=command,download_stock_videos=download,log_request=lambda *a:None))
+            self.assertEqual(probe.call_count,2)
+            self.assertEqual(download.call_args.kwargs['target_duration'],480)
+            self.assertEqual([(o,d) for o,d,_ in calls],[('landscape',120),('portrait',120),('landscape',480),('portrait',480)])
+            self.assertEqual(len({p for _,_,p in calls}),1)
+            self.assertEqual(len(videos),4)
+
+    def test_invalid_narration_fails_before_search(self):
+        for seconds in (None,0,-1,float('nan'),float('inf')):
+            with tempfile.TemporaryDirectory() as directory, patch('backend.modules.workflows.executor.probe_audio_duration',return_value=seconds):
+                llm, download = AsyncMock(), AsyncMock()
+                with self.assertRaisesRegex(RuntimeError,'有效配音时长'):
+                    asyncio.run(compose_videos('x',{},dict(video_generation_method='stock'),Path(directory),[{}],[dict(url='/media/x/audio.wav')],description='',is_deleting=lambda _:False,llm=llm,video_command=lambda *a:[],download_stock_videos=download,log_request=lambda *a:None))
+                llm.assert_not_called()
+                download.assert_not_called()

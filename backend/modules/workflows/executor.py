@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import subprocess
 import time
@@ -13,7 +14,7 @@ from typing import Any
 from backend.modules.contracts import DEFAULT_IMAGE_SIZES
 from backend.integrations.local_covers import generate_local_covers
 from backend.modules.workflows.content import demo_copy, generated_taxonomy
-from backend.integrations.video import normalize_stock_videos, probe_audio_duration, probe_video_metadata, video_encode_timeout, write_concat_manifest
+from backend.integrations.video import probe_audio_duration, probe_video_metadata, video_encode_timeout, write_concat_manifest
 from backend.integrations.stock_video import natural_scenery_query
 
 
@@ -276,28 +277,41 @@ async def compose_videos(
     if not covers:
         raise RuntimeError("缺少视频封面")
     background_music = item.get("background_music")
-    stock_manifest = None
-    if settings.get("video_generation_method", "local") == "stock":
-        provider = settings.get("stock_video_provider", "pexels")
-        search_query = await llm([
-            {"role": "system", "content": "Create one concise English stock-video search query (3-7 words). Use only natural scenery, landscapes, weather, plants, water, architecture, or atmospheric details. Never mention people, persons, faces, characters, crowds, portraits, or human actions. Output only the query."},
-            {"role": "user", "content": f"Book title: {item['book_title']}\nBook summary: {description}"},
-        ], settings, "视频搜索词生成")
-        search_query = natural_scenery_query((search_query or "serene cinematic natural landscape").strip().strip('"“”'))
-        clips = await download_stock_videos(
-            provider=provider,
-            api_base=settings[f"{provider}_api_base"],
-            api_key=settings.get(f"{provider}_api_key", ""),
-            query=search_query,
-            orientation=orientation,
-            output_dir=output_dir,
-            log_request=log_request,
-        )
-        normalized_clips = await asyncio.to_thread(normalize_stock_videos, ffmpeg, clips, output_dir, orientation)
-        stock_manifest = write_concat_manifest(output_dir / "stock-videos.ffconcat", normalized_clips)
+    narration_durations = []
+    for audio in audio_items:
+        if is_deleting(wid):
+            return None
+        seconds = await asyncio.to_thread(probe_audio_duration, output_dir / _media_name(audio["url"]))
+        if seconds is None or not math.isfinite(seconds) or seconds <= 0:
+            raise RuntimeError("无法读取有效配音时长")
+        narration_durations.append(seconds)
+    if not narration_durations:
+        raise RuntimeError("缺少视频配音")
     created = []
     completed = False
     try:
+        stock_manifest = None
+        if settings.get("video_generation_method", "local") == "stock":
+            provider = settings.get("stock_video_provider", "pexels")
+            search_query = await llm([
+                {"role": "system", "content": "Create one concise English stock-video search query (3-7 words). Use only natural scenery, landscapes, weather, plants, water, architecture, or atmospheric details. Never mention people, persons, faces, characters, crowds, portraits, or human actions. Output only the query."},
+                {"role": "user", "content": f"Book title: {item['book_title']}\nBook summary: {description}"},
+            ], settings, "视频搜索词生成")
+            search_query = natural_scenery_query((search_query or "serene cinematic natural landscape").strip().strip('"“”'))
+            clips = await download_stock_videos(
+                provider=provider,
+                api_base=settings[f"{provider}_api_base"],
+                api_key=settings.get(f"{provider}_api_key", ""),
+                query=search_query,
+                orientation=orientation,
+                output_dir=output_dir,
+                log_request=log_request,
+                target_duration=max(narration_durations),
+            )
+            created.extend(path.with_suffix("") for path in clips)
+            manifest_path = output_dir / f"stock-videos-{batch}.ffconcat"
+            created.append(manifest_path.with_suffix(""))
+            stock_manifest = write_concat_manifest(manifest_path, clips)
         from backend.integrations.local_covers import render_local_cover, STYLES
         groups = {}
         for cover_item in covers:
@@ -343,7 +357,7 @@ async def compose_videos(
                 subtitles = subtitle_file_for_audio(output_dir, audio, subtitle_items) if settings.get("burn_subtitles") else None
                 if subtitles is not None and not subtitles.is_file():
                     raise RuntimeError("找不到与配音对应的 SRT 字幕，无法烧录")
-                narration_duration = await asyncio.to_thread(probe_audio_duration, narration)
+                narration_duration = narration_durations[index]
                 try:
                     result = await asyncio.to_thread(
                         subprocess.run,

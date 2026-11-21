@@ -500,3 +500,5 @@
   .record-label-upload { padding: 16px; gap: 12px; }
   .record-label-buttons { flex-direction: column; }
 }
+
+.background-overlay-toggle:has(input:disabled) { opacity: .5; cursor: default; }
